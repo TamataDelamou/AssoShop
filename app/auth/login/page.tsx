@@ -1,21 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { useAuth } from "@/hooks/useAuth";
-import {
-  AuthMethod,
-  AuthStep,
-  AuthStatus,
-  ChannelType,
-} from "@/types/modules/auth";
-import {
-  AUTH_MESSAGES,
-  AUTH_CONFIG,
-  COMMON_LABELS,
-} from "@/utils/constants";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Card,
   CardContent,
@@ -23,6 +9,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -30,9 +18,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useAuth } from "@/hooks/useAuth";
+import {
+  AuthMethod,
+  AuthStatus,
+  AuthStep,
+  ChannelType,
+} from "@/types/modules/auth";
+import { AUTH_CONFIG, AUTH_MESSAGES, COMMON_LABELS } from "@/utils/constants";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export default function LoginPage() {
+  const router = useRouter();
   const {
     method,
     step,
@@ -251,7 +249,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md border-border/50 bg-card/50 backdrop-blur-xl shadow-xl">
+      <Card className="w-full max-w-md shadow-[0_0_30px_rgba(0,240,255,0.25)]">
         <CardHeader className="space-y-1">
           <CardTitle className="text-2xl font-light text-foreground">
             {AUTH_MESSAGES.TITLE}
@@ -272,6 +270,27 @@ export default function LoginPage() {
           {step === AuthStep.PIN_CREATION && renderPinStep()}
         </CardContent>
       </Card>
+
+      <div className="mt-4 flex flex-col items-center gap-2">
+        <div className="flex items-center gap-3 w-full max-w-md">
+          <span className="h-px flex-1 bg-border/50" />
+          <span className="text-xs text-muted-foreground">ou</span>
+          <span className="h-px flex-1 bg-border/50" />
+        </div>
+        <Button
+          variant="outline"
+          onClick={() => {
+            router.push("/api/demo-login");
+          }}
+          className="w-full max-w-md border-border/50 text-foreground hover:bg-primary/10"
+        >
+          Entrer en mode démo (parcourir les écrans)
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          Pose une session locale sans backend Supabase, uniquement pour tester
+          l&apos;application.
+        </p>
+      </div>
     </div>
   );
 }

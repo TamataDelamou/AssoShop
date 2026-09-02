@@ -6,8 +6,6 @@ import {
   LayoutDashboard,
   Users,
   Wallet,
-  HeartHandshake,
-  Calendar,
   ShoppingBag,
   LogOut,
   ChevronLeft,
@@ -19,15 +17,9 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Tableau de bord" },
   { href: "/dashboard/organizations", icon: Users, label: "Associations" },
-  { href: "/dashboard/members", icon: Users, label: "Membres" },
-  { href: "/dashboard/contributions", icon: Wallet, label: "Cotisations" },
-  {
-    href: "/dashboard/social-cases",
-    icon: HeartHandshake,
-    label: "Cas sociaux",
-  },
-  { href: "/dashboard/meetings", icon: Calendar, label: "Réunions" },
   { href: "/dashboard/market", icon: ShoppingBag, label: "Marketplace" },
+  { href: "/dashboard/pay", icon: Wallet, label: "AssoShop Pay" },
+  { href: "/dashboard/hub", icon: LayoutDashboard, label: "Hub Communautaire" },
 ];
 
 export function Sidebar() {
@@ -39,7 +31,7 @@ export function Sidebar() {
   const isOrgDetail = !!orgMatch;
 
   return (
-    <aside className="hidden md:flex w-64 flex-col border-r border-border/50 bg-card/30 backdrop-blur-sm p-4 h-screen sticky top-0">
+    <aside className="hidden md:flex w-64 flex-col border-r border-white/10 bg-black/40 backdrop-blur-md p-4 h-screen sticky top-0">
       <div className="text-2xl font-bold mb-8 text-transparent bg-clip-text bg-gradient-to-r from-primary to-secondary">
         AssoShop
       </div>

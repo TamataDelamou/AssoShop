@@ -12,15 +12,15 @@ import {
 } from "@/types/modules/auth";
 import { AUTH_CONFIG, ERROR_MESSAGES } from "@/utils/constants";
 
-export function useAuth() {
-  const [method, setMethod] = useState<AuthMethod>(AuthMethod.PHONE);
+export function useAuth(redirectTo = "/dashboard") {
+  const [method, setMethod] = useState<AuthMethod>(AuthMethod.EMAIL);
   const [step, setStep] = useState<AuthStep>(AuthStep.INPUT_CREDENTIALS);
   const [identifier, setIdentifier] = useState("");
   const [otp, setOtp] = useState("");
   const [pin, setPin] = useState("");
   const [status, setStatus] = useState<AuthStatus>(AuthStatus.IDLE);
   const [error, setError] = useState<string | null>(null);
-  const [channel, setChannel] = useState<ChannelType>(ChannelType.SMS);
+  const [channel, setChannel] = useState<ChannelType>(ChannelType.EMAIL_OTP);
   const [resendCountdown, setResendCountdown] = useState(0);
   const router = useRouter();
 
@@ -87,7 +87,7 @@ export function useAuth() {
           const { error } = await supabaseClient.auth.signInWithOtp({
             email: identifier,
             options: {
-              emailRedirectTo: window.location.origin + "/dashboard",
+              emailRedirectTo: window.location.origin + redirectTo,
             },
           });
           if (error) throw error;
@@ -104,7 +104,7 @@ export function useAuth() {
       setStatus(AuthStatus.ERROR);
       setError(getErrorMessage(err, ERROR_MESSAGES.UNKNOWN_ERROR));
     }
-  }, [identifier, method, channel, clearError]);
+  }, [identifier, method, channel, clearError, redirectTo]);
 
   // Vérifier le code OTP
   const verifyOtp = useCallback(async () => {
@@ -131,22 +131,25 @@ export function useAuth() {
       const { error } = await supabaseClient.auth.verifyOtp(verifyOptions);
       if (error) throw error;
 
-      // Si l'utilisateur n'a pas encore de PIN, on lui demande d'en créer un.
-      // Pour l'instant, on simule : si c'est la première connexion, on passe à PIN_CREATION
-      // Dans un vrai projet, on vérifierait un champ "has_pin" dans la table users.
-      const isNewUser = true; // À remplacer par une vérification réelle
-      if (isNewUser) {
-        setStep(AuthStep.PIN_CREATION);
-        setStatus(AuthStatus.SUCCESS);
-      } else {
-        // Connexion réussie : on redirige vers le dashboard
-        router.push("/dashboard");
+      // Vérifie si l'utilisateur possède déjà un PIN (table user_profiles).
+      const checkResponse = await fetch("/api/auth/check-pin");
+      if (!checkResponse.ok) {
+        throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
       }
+      const { hasPin } = (await checkResponse.json()) as { hasPin: boolean };
+
+      if (hasPin) {
+        router.push(redirectTo);
+        return;
+      }
+
+      setStep(AuthStep.PIN_CREATION);
+      setStatus(AuthStatus.SUCCESS);
     } catch (err: unknown) {
       setStatus(AuthStatus.ERROR);
       setError(getErrorMessage(err, ERROR_MESSAGES.OTP_INCORRECT));
     }
-  }, [otp, identifier, method, clearError, router]);
+  }, [otp, identifier, method, clearError, router, redirectTo]);
 
   // Créer le PIN
   const createPin = useCallback(async () => {
@@ -159,19 +162,21 @@ export function useAuth() {
     clearError();
 
     try {
-      // Ici, on enregistrerait le PIN dans la table users via une API sécurisée.
-      // Pour l'instant, on simule et on redirige.
-      // Appel à /api/auth/set-pin (à créer)
-      // const response = await fetch('/api/auth/set-pin', { method: 'POST', body: JSON.stringify({ pin }) });
-      // if (!response.ok) throw new Error('Erreur lors de la création du PIN');
+      const response = await fetch("/api/auth/set-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      if (!response.ok) {
+        throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
+      }
 
-      // Succès : redirection
-      router.push("/dashboard");
+      router.push(redirectTo);
     } catch (err: unknown) {
       setStatus(AuthStatus.ERROR);
       setError(getErrorMessage(err, ERROR_MESSAGES.UNKNOWN_ERROR));
     }
-  }, [pin, clearError, router]);
+  }, [pin, clearError, router, redirectTo]);
 
   return {
     method,

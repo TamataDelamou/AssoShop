@@ -34,9 +34,117 @@ export function OrganizationsPage() {
     router.push(`/dashboard/organizations/${orgId}/members`);
   };
 
+  const handleViewAdhesions = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/adhesions`);
+  };
+
+  const handleViewAntennas = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/antennas`);
+  };
+
+  const handleViewAffiliations = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/affiliations`);
+  };
+
+  const handleViewSharedMemberships = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/shared-memberships`);
+  };
+
+  const handleViewRelocations = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/relocations`);
+  };
+
+  const handleViewAgenda = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/agenda`);
+  };
+
+  const handleViewReports = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/reports`);
+  };
+
+  const handleViewSettings = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/settings`);
+  };
+
+  const handleViewSanctions = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/sanctions`);
+  };
+
+  const handleViewGovernance = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/governance`);
+  };
+
+  const handleViewTasks = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/tasks`);
+  };
+
+  const handleViewBeneficiaries = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/beneficiaries`);
+  };
+
+  const handleViewTreasury = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/treasury`);
+  };
+
+  const handleViewAssets = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/assets`);
+  };
+
+  const handleViewHR = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/hr`);
+  };
+
+  const handleViewContributions = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/contributions`);
+  };
+
+  const handleViewSocialCases = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/social-cases`);
+  };
+
+  const handleViewMeetings = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/meetings`);
+  };
+
+  const handleViewAnnouncements = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/announcements`);
+  };
+
+  const handleViewCrossedFeed = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/announcements/relay`);
+  };
+
+  const handleViewDocuments = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/documents`);
+  };
+
+  const handleViewProjects = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/projects`);
+  };
+
+  const handleViewFinance = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/finance`);
+  };
+
+  const handleViewLoans = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/finance/loans`);
+  };
+
+  const handleViewSolidarity = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/finance/solidarity`);
+  };
+
+  const handleViewAccounting = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/accounting`);
+  };
+
+  const handleViewSignatures = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/signatures`);
+  };
+
   return (
     <div className="space-y-6">
-      {/* En-tête avec recherche et bouton (inchangé) */}
+      {/* En-tête avec recherche et bouton */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <h2 className="text-2xl font-light text-foreground">
           {ORGANIZATION_LABELS.PAGE_TITLE}
@@ -65,7 +173,7 @@ export function OrganizationsPage() {
       <Card className="bg-card/50 backdrop-blur-sm border-border/50">
         <CardHeader>
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            Liste des organisations
+            {ORGANIZATION_LABELS.LIST_TITLE}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -78,7 +186,7 @@ export function OrganizationsPage() {
           ) : organizations.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               {searchTerm
-                ? "Aucun résultat pour cette recherche"
+                ? ORGANIZATION_LABELS.NO_SEARCH_RESULTS
                 : ORGANIZATION_LABELS.NO_DATA}
             </div>
           ) : (
@@ -95,7 +203,7 @@ export function OrganizationsPage() {
                     {ORGANIZATION_LABELS.CITY_LABEL}
                   </TableHead>
                   <TableHead className="text-muted-foreground font-medium">
-                    Statut
+                    {ORGANIZATION_LABELS.STATUS_LABEL}
                   </TableHead>
                   <TableHead className="text-muted-foreground font-medium text-right">
                     {ORGANIZATION_LABELS.MEMBERS_COUNT}
@@ -153,6 +261,222 @@ export function OrganizationsPage() {
                         className="text-muted-foreground hover:text-foreground"
                       >
                         {ORGANIZATION_LABELS.VIEW_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAdhesions(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Adhésions
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAntennas(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Antennes
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAffiliations(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Affiliées
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSharedMemberships(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Adhésion partagée
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewRelocations(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Déménagements
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAgenda(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Agenda
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewReports(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Rapports
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSettings(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Paramètres
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSanctions(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Sanctions
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewGovernance(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Gouvernance
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewTasks(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Tâches
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewBeneficiaries(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Bénéficiaires
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewTreasury(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Trésorerie
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAssets(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Actifs
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewHR(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        RH
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewContributions(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.CONTRIBUTIONS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSocialCases(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.SOCIAL_CASES_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewMeetings(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.MEETINGS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAnnouncements(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.ANNOUNCEMENTS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewCrossedFeed(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Fil croisé
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewDocuments(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.DOCUMENTS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewProjects(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.PROJECTS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewFinance(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.FINANCE_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewLoans(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.FINANCE_LOANS_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSolidarity(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.FINANCE_SOLIDARITY_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAccounting(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.ACCOUNTING_BUTTON}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewSignatures(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        Signature
                       </Button>
                       <Button
                         variant="ghost"

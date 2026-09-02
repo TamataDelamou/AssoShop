@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, UserPlus } from "lucide-react";
 import { useMembers } from "@/hooks/community/useMembers";
 import { AddMemberDialog } from "./AddMemberDialog";
+import { InviteMemberDialog } from "./InviteMemberDialog";
 import { MemberDetailsDialog } from "./MemberDetailsDialog";
+import { MemberProfileDialog } from "./MemberProfileDialog";
 import { MemberStatusBadge } from "./MemberStatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,13 +34,21 @@ interface Props {
 export function MembersPage({ organizationId, organizationName }: Props) {
   const [searchTerm, setSearchTerm] = useState("");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
+  const [profileMember, setProfileMember] = useState<Member | null>(null);
   const { members, loading, refetch } = useMembers(organizationId, searchTerm);
 
   const openMemberDetails = (member: Member) => {
     setSelectedMember(member);
     setDetailsDialogOpen(true);
+  };
+
+  const openMemberProfile = (member: Member) => {
+    setProfileMember(member);
+    setProfileDialogOpen(true);
   };
 
   return (
@@ -69,6 +79,14 @@ export function MembersPage({ organizationId, organizationName }: Props) {
           >
             <Plus className="mr-2 h-4 w-4" />
             {MEMBER_LABELS.ADD_BUTTON}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setInviteDialogOpen(true)}
+            className="border-border/50 text-foreground whitespace-nowrap"
+          >
+            <UserPlus className="mr-2 h-4 w-4" />
+            Inviter
           </Button>
         </div>
       </div>
@@ -156,6 +174,14 @@ export function MembersPage({ organizationId, organizationName }: Props) {
                         <Button
                           variant="ghost"
                           size="sm"
+                          onClick={() => openMemberProfile(member)}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          Profil
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => openMemberDetails(member)}
                           className="text-muted-foreground hover:text-foreground"
                         >
@@ -179,6 +205,12 @@ export function MembersPage({ organizationId, organizationName }: Props) {
         onSuccess={refetch}
       />
 
+      <InviteMemberDialog
+        open={inviteDialogOpen}
+        onOpenChange={setInviteDialogOpen}
+        organizationId={organizationId}
+      />
+
       <MemberDetailsDialog
         key={selectedMember?.id ?? "no-member"}
         open={detailsDialogOpen}
@@ -186,6 +218,15 @@ export function MembersPage({ organizationId, organizationName }: Props) {
         member={selectedMember}
         organizationId={organizationId}
         onSuccess={refetch}
+      />
+
+      <MemberProfileDialog
+        key={profileMember?.id ?? "no-member"}
+        open={profileDialogOpen}
+        onOpenChange={setProfileDialogOpen}
+        member={profileMember}
+        organizationId={organizationId}
+        organizationName={organizationName}
       />
     </div>
   );
