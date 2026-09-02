@@ -50,6 +50,7 @@ export default function LoginPage() {
     sendOtp,
     verifyOtp,
     createPin,
+    verifyPin,
     clearError,
   } = useAuth();
 
@@ -247,6 +248,39 @@ export default function LoginPage() {
     </>
   );
 
+  const renderPinEntryStep = () => (
+    <>
+      <div className="space-y-2">
+        <Label htmlFor="pin" className="text-foreground">
+          Code PIN
+        </Label>
+        <Input
+          id="pin"
+          type="password"
+          placeholder={AUTH_MESSAGES.PIN_PLACEHOLDER}
+          value={pin}
+          onChange={(e) => {
+            clearError();
+            setPin(e.target.value.slice(0, AUTH_CONFIG.PIN_LENGTH));
+          }}
+          className="bg-input/50 border-border/50 text-foreground placeholder:text-muted-foreground/50"
+          disabled={isLoading}
+        />
+        <p className="text-sm text-muted-foreground">
+          Saisissez votre code PIN à {AUTH_CONFIG.PIN_LENGTH} chiffres.
+        </p>
+      </div>
+
+      <Button
+        onClick={verifyPin}
+        disabled={isLoading || pin.length !== AUTH_CONFIG.PIN_LENGTH}
+        className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
+      >
+        {isLoading ? COMMON_LABELS.LOADING : AUTH_MESSAGES.PIN_UNLOCK_BUTTON}
+      </Button>
+    </>
+  );
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md shadow-[0_0_30px_rgba(0,240,255,0.25)]">
@@ -267,6 +301,7 @@ export default function LoginPage() {
 
           {step === AuthStep.INPUT_CREDENTIALS && renderInputStep()}
           {step === AuthStep.OTP_VERIFICATION && renderOtpStep()}
+          {step === AuthStep.PIN_ENTRY && renderPinEntryStep()}
           {step === AuthStep.PIN_CREATION && renderPinStep()}
         </CardContent>
       </Card>

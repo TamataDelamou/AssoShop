@@ -66,6 +66,7 @@ export const AUTH_MESSAGES = {
   EMAIL_PLACEHOLDER: "Votre adresse e-mail",
   OTP_PLACEHOLDER: "Code à 6 chiffres",
   PIN_PLACEHOLDER: "Code PIN (4 chiffres)",
+  PIN_UNLOCK_BUTTON: "Déverrouiller",
   LOGIN_BUTTON: "Recevoir le code",
   VERIFY_BUTTON: "Vérifier et se connecter",
   RESEND_OTP: "Renvoyer le code",
@@ -82,6 +83,7 @@ export const ERROR_MESSAGES = {
   INVALID_EMAIL: "Adresse e-mail invalide",
   INVALID_OTP: "Code à 6 chiffres requis",
   INVALID_PIN: "Code PIN à 4 chiffres requis",
+  PIN_INCORRECT: "Code PIN incorrect, veuillez réessayer",
   OTP_EXPIRED: "Le code a expiré, veuillez en demander un nouveau",
   OTP_INCORRECT: "Code incorrect, veuillez réessayer",
   NETWORK_ERROR: "Erreur réseau, vérifiez votre connexion",
@@ -1972,4 +1974,3 @@ export const PLATFORM_USER_STATUS_LABELS: Record<PlatformUserStatus, string> = {
   [PlatformUserStatus.ACTIVE]: "Actif",
   [PlatformUserStatus.SUSPENDED]: "Suspendu",
 };
-

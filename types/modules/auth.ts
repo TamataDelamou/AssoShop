@@ -10,6 +10,7 @@ export enum AuthStep {
   IDLE = "idle",
   INPUT_CREDENTIALS = "input_credentials",
   OTP_VERIFICATION = "otp_verification",
+  PIN_ENTRY = "pin_entry", // Connexion suivante : saisie du PIN existant
   PIN_CREATION = "pin_creation", // Premier connexion / réinitialisation
   DASHBOARD = "dashboard",
 }

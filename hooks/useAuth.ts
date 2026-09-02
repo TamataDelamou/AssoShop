@@ -139,7 +139,8 @@ export function useAuth(redirectTo = "/dashboard") {
       const { hasPin } = (await checkResponse.json()) as { hasPin: boolean };
 
       if (hasPin) {
-        router.push(redirectTo);
+        setPin("");
+        setStep(AuthStep.PIN_ENTRY);
         return;
       }
 
@@ -149,7 +150,7 @@ export function useAuth(redirectTo = "/dashboard") {
       setStatus(AuthStatus.ERROR);
       setError(getErrorMessage(err, ERROR_MESSAGES.OTP_INCORRECT));
     }
-  }, [otp, identifier, method, clearError, router, redirectTo]);
+  }, [otp, identifier, method, clearError]);
 
   // Créer le PIN
   const createPin = useCallback(async () => {
@@ -178,6 +179,39 @@ export function useAuth(redirectTo = "/dashboard") {
     }
   }, [pin, clearError, router, redirectTo]);
 
+  // Vérifier le PIN (connexion suivante)
+  const verifyPin = useCallback(async () => {
+    if (!pin || pin.length !== AUTH_CONFIG.PIN_LENGTH) {
+      setError(ERROR_MESSAGES.INVALID_PIN);
+      return;
+    }
+
+    setStatus(AuthStatus.LOADING);
+    clearError();
+
+    try {
+      const response = await fetch("/api/auth/verify-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (data?.error === "INCORRECT_PIN") {
+          throw new Error(ERROR_MESSAGES.PIN_INCORRECT);
+        }
+        throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
+      }
+
+      router.push(redirectTo);
+    } catch (err: unknown) {
+      setStatus(AuthStatus.ERROR);
+      setError(getErrorMessage(err, ERROR_MESSAGES.PIN_INCORRECT));
+    }
+  }, [pin, clearError, router, redirectTo]);
+
   return {
     method,
     step,
@@ -197,6 +231,7 @@ export function useAuth(redirectTo = "/dashboard") {
     sendOtp,
     verifyOtp,
     createPin,
+    verifyPin,
     clearError,
   };
 }
