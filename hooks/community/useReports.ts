@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { membersService } from "@/services/community/members";
 import { contributionsService } from "@/services/community/contributions";
 import { meetingsService } from "@/services/community/meetings";
@@ -19,6 +18,14 @@ import {
   MemberStatus,
   SocialCase,
 } from "@/types/modules/community";
+import { REPORT_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "reports",
+  cacheableReads: [REPORT_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 export interface EvolutionPoint {
   key: string;
@@ -140,47 +147,41 @@ function computeStats(
 }
 
 export function useReports(organizationId: string) {
-  const [stats, setStats] = useState<ReportsStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const { data, loading, error } = useOfflineQuery<ReportsStats>(
+    `${REPORT_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+    async () => {
+      const [members, contributions, meetings, events, projects, socialCases] =
+        await Promise.all([
+          membersService.getMembers(organizationId),
+          contributionsService.getContributions(organizationId),
+          meetingsService.getMeetings(organizationId),
+          eventsService.getEvents(organizationId),
+          projectsService.getProjects(organizationId),
+          socialCasesService.getSocialCases(organizationId),
+        ]);
+      return computeStats(
+        members,
+        contributions,
+        meetings,
+        events,
+        projects,
+        socialCases,
+      );
+    },
+    {
+      ttlMs: REPORT_CONFIG.CACHE_TTL_MS,
+      parse: (stats) => ({
+        ...stats,
+        members: {
+          ...stats.members,
+          evolution: stats.members.evolution.map((ep) => ({
+            ...ep,
+            date: new Date(ep.date),
+          })),
+        },
+      }),
+    },
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const [members, contributions, meetings, events, projects, socialCases] =
-          await Promise.all([
-            membersService.getMembers(organizationId),
-            contributionsService.getContributions(organizationId),
-            meetingsService.getMeetings(organizationId),
-            eventsService.getEvents(organizationId),
-            projectsService.getProjects(organizationId),
-            socialCasesService.getSocialCases(organizationId),
-          ]);
-        if (!cancelled) {
-          setStats(
-            computeStats(
-              members,
-              contributions,
-              meetings,
-              events,
-              projects,
-              socialCases,
-            ),
-          );
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [organizationId]);
-
-  return { stats, loading, error };
+  return { stats: data, loading, error };
 }

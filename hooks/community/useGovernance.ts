@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { governanceService } from "@/services/community/governance";
 import { membersService } from "@/services/community/members";
 import {
@@ -10,6 +10,14 @@ import {
   Mandate,
   Member,
 } from "@/types/modules/community";
+import { GOVERNANCE_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "governance",
+  cacheableReads: [GOVERNANCE_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseElection(election: Election): Election {
   return {
@@ -27,72 +35,47 @@ function parseMandate(mandate: Mandate): Mandate {
   };
 }
 
+interface GovernanceBundle {
+  elections: Election[];
+  mandates: Mandate[];
+  members: Member[];
+}
+
 export function useGovernance(organizationId: string) {
-  const [elections, setElections] = useState<Election[]>([]);
-  const [mandates, setMandates] = useState<Mandate[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [loading, setLoading] = useState(true);
   const [busyElectionId, setBusyElectionId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<GovernanceBundle>(
+      `${GOVERNANCE_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      async () => {
+        const [elections, mandates, members] = await Promise.all([
+          governanceService.getElections(organizationId),
+          governanceService.getMandates(organizationId),
+          membersService.getMembers(organizationId),
+        ]);
+        return { elections, mandates, members };
+      },
+      {
+        ttlMs: GOVERNANCE_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => ({
+          elections: bundle.elections.map((election) => ({
+            ...parseElection(election),
+            candidates: election.candidates.map((candidate) => ({
+              ...candidate,
+              member_name:
+                candidate.member_name ??
+                bundle.members.find((m) => m.id === candidate.member_id)?.user
+                  ?.name ??
+                "Membre",
+            })),
+          })),
+          mandates: bundle.mandates.map(parseMandate),
+          members: bundle.members,
+        }),
+      },
+    );
 
-  const load = useCallback(async () => {
-    const [electionsData, mandatesData, membersData] = await Promise.all([
-      governanceService.getElections(organizationId),
-      governanceService.getMandates(organizationId),
-      membersService.getMembers(organizationId),
-    ]);
-
-    const electionsWithNames = electionsData.map((election) => ({
-      ...parseElection(election),
-      candidates: election.candidates.map((candidate) => ({
-        ...candidate,
-        member_name:
-          candidate.member_name ??
-          membersData.find((m) => m.id === candidate.member_id)?.user?.name ??
-          "Membre",
-      })),
-    }));
-
-    return {
-      elections: electionsWithNames,
-      mandates: mandatesData.map(parseMandate),
-      members: membersData,
-    };
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setElections(data.elections);
-          setMandates(data.mandates);
-          setMembers(data.members);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      const data = await load();
-      setElections(data.elections);
-      setMandates(data.mandates);
-      setMembers(data.members);
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const run = useCallback(
     async (
@@ -100,18 +83,18 @@ export function useGovernance(organizationId: string) {
       action: () => Promise<unknown>,
     ): Promise<void> => {
       setBusyElectionId(electionId);
-      setError(null);
+      setActionError(null);
       try {
         await action();
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyElectionId(null);
       }
     },
-    [refetch],
+    [refresh],
   );
 
   const castVote = useCallback(
@@ -139,9 +122,9 @@ export function useGovernance(organizationId: string) {
   );
 
   return {
-    elections,
-    mandates,
-    members,
+    elections: data?.elections ?? [],
+    mandates: data?.mandates ?? [],
+    members: data?.members ?? [],
     loading,
     busyElectionId,
     error,

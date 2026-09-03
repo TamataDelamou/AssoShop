@@ -2027,3 +2027,69 @@ export const MOBILITY_CONFIG = {
   CACHE_KEY_PREFIX: "mobility:",
   SYNC_MODULE: "mobility",
 };
+
+export const AFFILIATION_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "affiliations:",
+  SYNC_MODULE: "affiliations",
+};
+
+export const ANTENNA_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "antennas:",
+  SYNC_MODULE: "antennas",
+};
+
+export const BENEFICIARY_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "beneficiaries:",
+  SYNC_MODULE: "beneficiaries",
+};
+
+export const RELOCATION_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "relocations:",
+  SYNC_MODULE: "relocations",
+};
+
+export const SANCTION_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "sanctions:",
+  SYNC_MODULE: "sanctions",
+};
+
+export const TASK_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "tasks:",
+  SYNC_MODULE: "tasks",
+};
+
+export const GOVERNANCE_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "governance:",
+  SYNC_MODULE: "governance",
+};
+
+export const HR_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "hr:",
+  SYNC_MODULE: "hr",
+};
+
+export const REPORT_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "reports:",
+  SYNC_MODULE: "reports",
+};
+
+export const SETTINGS_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "settings:",
+  SYNC_MODULE: "settings",
+};
+
+export const SHARED_MEMBERSHIP_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "shared-memberships:",
+  SYNC_MODULE: "shared-memberships",
+};

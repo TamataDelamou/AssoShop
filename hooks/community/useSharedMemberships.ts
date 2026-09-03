@@ -1,151 +1,151 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { sharedMembershipsService } from "@/services/community/sharedMemberships";
 import { affiliationsService } from "@/services/community/affiliations";
 import { organizationsService } from "@/services/community/organizations";
 import {
   Affiliation,
   CreateSharedMembershipPayload,
+  Organization,
   SharedMembershipRequest,
 } from "@/types/modules/community";
+import { SHARED_MEMBERSHIP_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
 
-function parseSharedMembership(s: SharedMembershipRequest): SharedMembershipRequest {
-  return { ...s, requested_at: s.requested_at ? new Date(s.requested_at) : null };
+declareOffline({
+  module: "shared-memberships",
+  cacheableReads: [SHARED_MEMBERSHIP_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
+
+function parseSharedMembership(
+  s: SharedMembershipRequest,
+): SharedMembershipRequest {
+  return {
+    ...s,
+    requested_at: s.requested_at ? new Date(s.requested_at) : null,
+  };
+}
+
+interface SharedMembershipsBundle {
+  requests: SharedMembershipRequest[];
+  affiliations: Affiliation[];
+  organizations: Organization[];
 }
 
 export function useSharedMemberships(organizationId: string) {
-  const [requests, setRequests] = useState<SharedMembershipRequest[]>([]);
-  const [affiliations, setAffiliations] = useState<Affiliation[]>([]);
-  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-
-  const load = useCallback(async () => {
-    const [sharedData, affiliationsData, orgsData] = await Promise.all([
-      sharedMembershipsService.getSharedMemberships(organizationId),
-      affiliationsService.getAffiliations(organizationId),
-      organizationsService.getOrganizations(),
-    ]);
-
-    const orgNameById = new Map(orgsData.map((o) => [o.id, o.name] as const));
-    const affiliateIdByAffiliationId = new Map(
-      affiliationsData.map((a) => [a.id, a.affiliate_id] as const),
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<SharedMembershipsBundle>(
+      `${SHARED_MEMBERSHIP_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      async () => {
+        const [requests, affiliations, organizations] = await Promise.all([
+          sharedMembershipsService.getSharedMemberships(organizationId),
+          affiliationsService.getAffiliations(organizationId),
+          organizationsService.getOrganizations(),
+        ]);
+        return { requests, affiliations, organizations };
+      },
+      {
+        ttlMs: SHARED_MEMBERSHIP_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => {
+          const orgNameById = new Map(
+            bundle.organizations.map((o) => [o.id, o.name] as const),
+          );
+          const affiliateIdByAffiliationId = new Map(
+            bundle.affiliations.map((a) => [a.id, a.affiliate_id] as const),
+          );
+          return {
+            requests: bundle.requests.map((s) => {
+              const affiliateId = affiliateIdByAffiliationId.get(
+                s.source_affiliation_id,
+              );
+              return {
+                ...parseSharedMembership(s),
+                source_organization_name: affiliateId
+                  ? orgNameById.get(affiliateId)
+                  : undefined,
+              };
+            }),
+            affiliations: bundle.affiliations.map((a) => ({
+              ...a,
+              linked_at: a.linked_at ? new Date(a.linked_at) : null,
+              affiliate_name: orgNameById.get(a.affiliate_id),
+            })),
+            organizations: bundle.organizations,
+          };
+        },
+      },
     );
 
-    return {
-      requests: sharedData.map((s) => {
-        const affiliateId = affiliateIdByAffiliationId.get(
-          s.source_affiliation_id,
-        );
-        return {
-          ...parseSharedMembership(s),
-          source_organization_name: affiliateId
-            ? orgNameById.get(affiliateId)
-            : undefined,
-        };
-      }),
-      affiliations: affiliationsData.map((a) => ({
-        ...a,
-        linked_at: a.linked_at ? new Date(a.linked_at) : null,
-        affiliate_name: orgNameById.get(a.affiliate_id),
-      })),
-    };
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setRequests(data.requests);
-          setAffiliations(data.affiliations);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      const data = await load();
-      setRequests(data.requests);
-      setAffiliations(data.affiliations);
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const createSharedMembership = useCallback(
     async (payload: CreateSharedMembershipPayload) => {
       setCreating(true);
-      setError(null);
+      setActionError(null);
       try {
-        await sharedMembershipsService.createSharedMembership(organizationId, payload);
-        await refetch();
+        await sharedMembershipsService.createSharedMembership(
+          organizationId,
+          payload,
+        );
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setCreating(false);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const approve = useCallback(
     async (sharedMembershipId: string) => {
       setBusyId(sharedMembershipId);
-      setError(null);
+      setActionError(null);
       try {
         await sharedMembershipsService.approveSharedMembership(
           organizationId,
           sharedMembershipId,
         );
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const reject = useCallback(
     async (sharedMembershipId: string) => {
       setBusyId(sharedMembershipId);
-      setError(null);
+      setActionError(null);
       try {
         await sharedMembershipsService.rejectSharedMembership(
           organizationId,
           sharedMembershipId,
         );
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   return {
-    requests,
-    affiliations,
+    requests: data?.requests ?? [],
+    affiliations: data?.affiliations ?? [],
     loading,
     creating,
     busyId,

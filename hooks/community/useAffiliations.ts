@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { affiliationsService } from "@/services/community/affiliations";
 import { organizationsService } from "@/services/community/organizations";
 import {
@@ -9,130 +9,124 @@ import {
   Organization,
   UpdateAffiliationPayload,
 } from "@/types/modules/community";
+import { AFFILIATION_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "affiliations",
+  cacheableReads: [AFFILIATION_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseAffiliation(a: Affiliation): Affiliation {
   return { ...a, linked_at: a.linked_at ? new Date(a.linked_at) : null };
 }
 
+interface AffiliationsBundle {
+  affiliations: Affiliation[];
+  organizations: Organization[];
+}
+
 export function useAffiliations(organizationId: string) {
-  const [affiliations, setAffiliations] = useState<Affiliation[]>([]);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-
-  const load = useCallback(async () => {
-    const [affiliationsData, organizationsData] = await Promise.all([
-      affiliationsService.getAffiliations(organizationId),
-      organizationsService.getOrganizations(),
-    ]);
-
-    const nameById = new Map(
-      organizationsData.map((o) => [o.id, o.name] as const),
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<AffiliationsBundle>(
+      `${AFFILIATION_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      async () => {
+        const [affiliations, organizations] = await Promise.all([
+          affiliationsService.getAffiliations(organizationId),
+          organizationsService.getOrganizations(),
+        ]);
+        return { affiliations, organizations };
+      },
+      {
+        ttlMs: AFFILIATION_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => {
+          const nameById = new Map(
+            bundle.organizations.map((o) => [o.id, o.name] as const),
+          );
+          return {
+            affiliations: bundle.affiliations.map((a) => ({
+              ...parseAffiliation(a),
+              affiliate_name: nameById.get(a.affiliate_id) ?? a.affiliate_name,
+            })),
+            organizations: bundle.organizations,
+          };
+        },
+      },
     );
-    return {
-      affiliations: affiliationsData.map((a) => ({
-        ...parseAffiliation(a),
-        affiliate_name: nameById.get(a.affiliate_id) ?? a.affiliate_name,
-      })),
-      organizations: organizationsData,
-    };
-  }, [organizationId]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setAffiliations(data.affiliations);
-          setOrganizations(data.organizations);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      const data = await load();
-      setAffiliations(data.affiliations);
-      setOrganizations(data.organizations);
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
+  const affiliations = data?.affiliations ?? [];
 
   const linkAffiliation = useCallback(
     async (payload: LinkAffiliationPayload) => {
       setLinking(true);
-      setError(null);
+      setActionError(null);
       try {
         await affiliationsService.linkAffiliation(organizationId, payload);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setLinking(false);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const updateAffiliation = useCallback(
     async (affiliationId: string, payload: UpdateAffiliationPayload) => {
       setBusyId(affiliationId);
-      setError(null);
+      setActionError(null);
       try {
         await affiliationsService.updateAffiliation(
           organizationId,
           affiliationId,
           payload,
         );
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const unlinkAffiliation = useCallback(
     async (affiliationId: string) => {
       setBusyId(affiliationId);
-      setError(null);
+      setActionError(null);
       try {
-        await affiliationsService.unlinkAffiliation(organizationId, affiliationId);
-        await refetch();
+        await affiliationsService.unlinkAffiliation(
+          organizationId,
+          affiliationId,
+        );
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const availableOrganizations = useMemo(() => {
-    const linkedIds = new Set(affiliations.map((a) => a.affiliate_id));
-    return organizations.filter(
+    const affs = data?.affiliations ?? [];
+    const orgs = data?.organizations ?? [];
+    const linkedIds = new Set(affs.map((a) => a.affiliate_id));
+    return orgs.filter(
       (o) => o.id !== organizationId && !linkedIds.has(o.id),
     );
-  }, [organizations, affiliations, organizationId]);
+  }, [data?.affiliations, data?.organizations, organizationId]);
 
   return {
     affiliations,

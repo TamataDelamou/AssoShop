@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { sanctionsService } from "@/services/community/sanctions";
 import { membersService } from "@/services/community/members";
 import {
@@ -8,6 +8,14 @@ import {
   Member,
   Sanction,
 } from "@/types/modules/community";
+import { SANCTION_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "sanctions",
+  cacheableReads: [SANCTION_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseSanction(sanction: Sanction): Sanction {
   return {
@@ -18,107 +26,88 @@ function parseSanction(sanction: Sanction): Sanction {
   };
 }
 
+interface SanctionsBundle {
+  sanctions: Sanction[];
+  members: Member[];
+}
+
 export function useSanctions(organizationId: string) {
-  const [sanctions, setSanctions] = useState<Sanction[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [liftingId, setLiftingId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<SanctionsBundle>(
+      `${SANCTION_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      async () => {
+        const [sanctions, members] = await Promise.all([
+          sanctionsService.getSanctions(organizationId),
+          membersService.getMembers(organizationId),
+        ]);
+        return { sanctions, members };
+      },
+      {
+        ttlMs: SANCTION_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => ({
+          sanctions: bundle.sanctions.map((sanction) => {
+            const member = bundle.members.find(
+              (m) => m.id === sanction.member_id,
+            );
+            return {
+              ...parseSanction(sanction),
+              member: member
+                ? {
+                    id: member.id,
+                    name: member.user?.name ?? "Utilisateur",
+                    email: member.user?.email,
+                    phone: member.user?.phone,
+                  }
+                : sanction.member,
+            };
+          }),
+          members: bundle.members,
+        }),
+      },
+    );
 
-  const load = useCallback(async () => {
-    const [sanctionsData, membersData] = await Promise.all([
-      sanctionsService.getSanctions(organizationId),
-      membersService.getMembers(organizationId),
-    ]);
-
-    const joined = sanctionsData.map((sanction) => {
-      const member = membersData.find((m) => m.id === sanction.member_id);
-      return {
-        ...parseSanction(sanction),
-        member: member
-          ? {
-              id: member.id,
-              name: member.user?.name ?? "Utilisateur",
-              email: member.user?.email,
-              phone: member.user?.phone,
-            }
-          : sanction.member,
-      };
-    });
-
-    return { sanctions: joined, members: membersData };
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setSanctions(data.sanctions);
-          setMembers(data.members);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      const data = await load();
-      setSanctions(data.sanctions);
-      setMembers(data.members);
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const applySanction = useCallback(
     async (payload: ApplySanctionPayload) => {
       setApplying(true);
-      setError(null);
+      setActionError(null);
       try {
         await sanctionsService.applySanction(organizationId, payload);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setApplying(false);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const liftSanction = useCallback(
     async (sanctionId: string) => {
       setLiftingId(sanctionId);
-      setError(null);
+      setActionError(null);
       try {
         await sanctionsService.liftSanction(organizationId, sanctionId);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setLiftingId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   return {
-    sanctions,
-    members,
+    sanctions: data?.sanctions ?? [],
+    members: data?.members ?? [],
     loading,
     applying,
     liftingId,

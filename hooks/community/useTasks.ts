@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { tasksService } from "@/services/community/tasks";
 import { membersService } from "@/services/community/members";
 import {
@@ -9,6 +9,14 @@ import {
   Member,
   UpdateTaskPayload,
 } from "@/types/modules/community";
+import { TASK_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "tasks",
+  cacheableReads: [TASK_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseTask(task: CommunityTask): CommunityTask {
   return {
@@ -18,104 +26,83 @@ function parseTask(task: CommunityTask): CommunityTask {
   };
 }
 
+interface TasksBundle {
+  tasks: CommunityTask[];
+  members: Member[];
+}
+
 export function useTasks(organizationId: string) {
-  const [tasks, setTasks] = useState<CommunityTask[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<TasksBundle>(
+      `${TASK_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      async () => {
+        const [tasks, members] = await Promise.all([
+          tasksService.getTasks(organizationId),
+          membersService.getMembers(organizationId),
+        ]);
+        return { tasks, members };
+      },
+      {
+        ttlMs: TASK_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => ({
+          tasks: bundle.tasks.map((task) => {
+            const member = task.assignee_id
+              ? bundle.members.find((m) => m.id === task.assignee_id)
+              : undefined;
+            return {
+              ...parseTask(task),
+              assignee: member
+                ? { id: member.id, name: member.user?.name ?? "Utilisateur" }
+                : undefined,
+            };
+          }),
+          members: bundle.members,
+        }),
+      },
+    );
 
-  const load = useCallback(async () => {
-    const [tasksData, membersData] = await Promise.all([
-      tasksService.getTasks(organizationId),
-      membersService.getMembers(organizationId),
-    ]);
-
-    const tasksJoined = tasksData.map((task) => {
-      const member = task.assignee_id
-        ? membersData.find((m) => m.id === task.assignee_id)
-        : undefined;
-      return {
-        ...parseTask(task),
-        assignee: member
-          ? { id: member.id, name: member.user?.name ?? "Utilisateur" }
-          : undefined,
-      };
-    });
-
-    return { tasks: tasksJoined, members: membersData };
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setTasks(data.tasks);
-          setMembers(data.members);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      const data = await load();
-      setTasks(data.tasks);
-      setMembers(data.members);
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const createTask = useCallback(
     async (payload: CreateTaskPayload) => {
       setCreating(true);
-      setError(null);
+      setActionError(null);
       try {
         await tasksService.createTask(organizationId, payload);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setCreating(false);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const updateTask = useCallback(
     async (taskId: string, payload: UpdateTaskPayload) => {
       setBusyTaskId(taskId);
-      setError(null);
+      setActionError(null);
       try {
         await tasksService.updateTask(organizationId, taskId, payload);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyTaskId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   return {
-    tasks,
-    members,
+    tasks: data?.tasks ?? [],
+    members: data?.members ?? [],
     loading,
     creating,
     busyTaskId,
