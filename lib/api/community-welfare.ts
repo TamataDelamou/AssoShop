@@ -454,6 +454,26 @@ export async function listSocialCases(
   return items;
 }
 
+async function resolveBeneficiaryUserId(
+  supabase: SupabaseClient,
+  organizationId: string,
+  beneficiaryName: string,
+): Promise<string | null> {
+  const needle = beneficiaryName.trim().toLowerCase();
+  if (!needle) return null;
+  const { data } = await supabase
+    .from("members")
+    .select("user_id, name, email")
+    .eq("organization_id", organizationId);
+  const match = (data ?? []).find(
+    (m: { user_id: string | null; name: string; email: string | null }) =>
+      m.user_id &&
+      ((m.name ?? "").toLowerCase() === needle ||
+        (m.email ?? "").toLowerCase() === needle),
+  );
+  return match?.user_id ?? null;
+}
+
 export async function createSocialCase(
   supabase: SupabaseClient,
   organizationId: string,
@@ -464,8 +484,17 @@ export async function createSocialCase(
     beneficiary_name: string;
     target_amount: number;
     contributors_visible: boolean;
+    beneficiary_user_id?: string | null;
   },
 ): Promise<SocialCase> {
+  const beneficiaryUserId =
+    payload.beneficiary_user_id ??
+    (await resolveBeneficiaryUserId(
+      supabase,
+      organizationId,
+      payload.beneficiary_name,
+    ));
+
   const { data, error } = await supabase
     .from("social_cases")
     .insert({
@@ -475,6 +504,7 @@ export async function createSocialCase(
       type: payload.type,
       status: "submitted",
       beneficiary_name: payload.beneficiary_name,
+      beneficiary_user_id: beneficiaryUserId,
       target_amount: payload.target_amount,
       collected_amount: 0,
       currency: "GNF",

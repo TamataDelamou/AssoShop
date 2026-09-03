@@ -85,8 +85,17 @@ export async function getFinancialSituation(
     );
   }
 
-  // aids_received : social_cases est nominatif (beneficiary_name), non relié
-  // à auth.users pour l'instant — reste à 0.
+  // Aides reçues : cas sociaux (financés/décaissés) dont le bénéficiaire
+  // est lié au compte.
+  const { data: aids } = await supabase
+    .from("social_cases")
+    .select("collected_amount")
+    .eq("beneficiary_user_id", userId)
+    .in("status", ["funded", "disbursed"]);
+  situation.aids_received = (aids ?? []).reduce(
+    (sum, c) => sum + Number(c.collected_amount),
+    0,
+  );
 
   return situation;
 }

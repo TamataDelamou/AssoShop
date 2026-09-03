@@ -197,6 +197,51 @@ async function main() {
       pay.status === 200 && pay.json?.situation?.contributions === 50000,
       pay.status,
     ]);
+
+    const beneficiaryName = member.json?.user?.name;
+    const sc = await req(`/api/organizations/${orgId}/social-cases`, {
+      method: "POST",
+      cookie,
+      body: {
+        title: "Aide E2E",
+        description: "",
+        type: "other",
+        beneficiary_name: beneficiaryName,
+        target_amount: 20000,
+        contributors_visible: true,
+      },
+    });
+    const caseId = sc.json?.id;
+    linkResults.push([
+      "création cas social",
+      sc.status === 201 && !!caseId,
+      sc.status,
+    ]);
+
+    if (caseId) {
+      const { data: dbCase } = await admin
+        .from("social_cases")
+        .select("beneficiary_user_id")
+        .eq("id", caseId)
+        .single();
+      linkResults.push([
+        "bénéficiaire lié au compte",
+        dbCase?.beneficiary_user_id === userId,
+        200,
+      ]);
+
+      await admin
+        .from("social_cases")
+        .update({ status: "disbursed", collected_amount: 20000 })
+        .eq("id", caseId);
+
+      const pay2 = await req("/api/pay/bundle", { cookie });
+      linkResults.push([
+        "situation.aids_received = 20000",
+        pay2.status === 200 && pay2.json?.situation?.aids_received === 20000,
+        pay2.status,
+      ]);
+    }
   }
 
   for (const [label, ok, status] of linkResults) {
