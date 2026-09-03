@@ -4,6 +4,7 @@
 // démarrage de l'app (OfflineSyncProvider).
 
 import { registerReplayHandler } from "./syncQueue";
+import { declareOffline } from "./manifest";
 import { accountingService } from "@/services/accounting/accounting";
 import { projectsService } from "@/services/community/projects";
 import { meetingsService } from "@/services/community/meetings";
@@ -169,5 +170,57 @@ export function registerAllReplayHandlers(): void {
     const { organizationId, ...payload } = op as { organizationId: string } &
       Parameters<typeof solidarityService.enrollInsurance>[1];
     return solidarityService.enrollInsurance(organizationId, payload);
+  });
+
+  // Déclare les mutations différées par module (manifest hors-ligne).
+  declareOffline({
+    module: "accounting",
+    cacheableReads: [],
+    deferredMutations: [
+      "consolidate",
+      "create_entry",
+      "reconcile_line",
+      "validate_entry",
+    ],
+  });
+  declareOffline({
+    module: "projects",
+    cacheableReads: [],
+    deferredMutations: ["contribute", "create"],
+  });
+  declareOffline({
+    module: "meetings",
+    cacheableReads: [],
+    deferredMutations: ["plan"],
+  });
+  declareOffline({
+    module: "announcements",
+    cacheableReads: [],
+    deferredMutations: ["publish"],
+  });
+  declareOffline({
+    module: "documents",
+    cacheableReads: [],
+    deferredMutations: ["upload"],
+  });
+  declareOffline({
+    module: "loans",
+    cacheableReads: [],
+    deferredMutations: [
+      "confirm_sponsor",
+      "decide_loan",
+      "repay_installment",
+      "request_loan",
+    ],
+  });
+  declareOffline({
+    module: "finance",
+    cacheableReads: [],
+    deferredMutations: ["create_group", "declare_payment", "validate_payment"],
+  });
+  declareOffline({
+    module: "solidarity",
+    cacheableReads: [],
+    deferredMutations: ["decide_claim", "declare_claim", "enroll_insurance"],
   });
 }

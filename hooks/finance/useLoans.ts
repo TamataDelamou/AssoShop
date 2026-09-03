@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { loansService } from "@/services/finance/loans";
 import { GroupLoan } from "@/types/modules/finance";
-import { LOAN_CONFIG, LOAN_LABELS } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { LOAN_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "loans",
+  cacheableReads: [LOAN_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseLoans(data: GroupLoan[]): GroupLoan[] {
   return data.map((l) => ({
@@ -23,69 +28,17 @@ function parseLoans(data: GroupLoan[]): GroupLoan[] {
 }
 
 export function useLoans(organizationId: string, search = "", status = "") {
-  const [loans, setLoans] = useState<GroupLoan[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
+  const cacheKey = `${LOAN_CONFIG.CACHE_KEY_PREFIX}${organizationId}:${search || "_"}:${status || "_"}`;
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<GroupLoan[]>(
+      cacheKey,
+      () =>
+        loansService.getLoans(organizationId, {
+          search: search || undefined,
+          status: status || undefined,
+        }),
+      { ttlMs: LOAN_CONFIG.CACHE_TTL_MS, parse: parseLoans },
+    );
 
-  const cacheKey = `${LOAN_CONFIG.CACHE_KEY_PREFIX}${organizationId}`;
-
-  const fetchRemote = useCallback(async (): Promise<GroupLoan[]> => {
-    const data = await loansService.getLoans(organizationId, {
-      search: search || undefined,
-      status: status || undefined,
-    });
-    return parseLoans(data);
-  }, [organizationId, search, status]);
-
-  const load = useCallback(async () => {
-    const cached = readCache<GroupLoan[]>(cacheKey);
-    if (cached) {
-      setLoans(parseLoans(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setLoans(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, LOAN_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error(LOAN_LABELS.LOAD_ERROR, err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { loans, loading, error, fromCache, online, refetch };
+  return { loans: data ?? [], loading, error, fromCache, online, refetch };
 }

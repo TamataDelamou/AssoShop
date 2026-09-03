@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { adminService } from "@/services/admin/admin";
 import { AdminBundle } from "@/types/modules/admin";
 import { ADMIN_CONFIG } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "admin",
+  cacheableReads: [`${ADMIN_CONFIG.CACHE_KEY_PREFIX}bundle`],
+  deferredMutations: [],
+});
 
 function parseBundle(data: AdminBundle): AdminBundle {
   return {
@@ -64,66 +69,12 @@ function parseBundle(data: AdminBundle): AdminBundle {
 }
 
 export function useAdmin() {
-  const [bundle, setBundle] = useState<AdminBundle | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<AdminBundle>(
+      `${ADMIN_CONFIG.CACHE_KEY_PREFIX}bundle`,
+      () => adminService.getBundle(),
+      { ttlMs: ADMIN_CONFIG.CACHE_TTL_MS, parse: parseBundle },
+    );
 
-  const cacheKey = `${ADMIN_CONFIG.CACHE_KEY_PREFIX}bundle`;
-
-  const fetchRemote = useCallback(async (): Promise<AdminBundle> => {
-    const data = await adminService.getBundle();
-    return parseBundle(data);
-  }, []);
-
-  const load = useCallback(async () => {
-    const cached = readCache<AdminBundle>(cacheKey);
-    if (cached) {
-      setBundle(parseBundle(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setBundle(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, ADMIN_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error("Impossible de charger le back-office.", err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { bundle, loading, error, fromCache, online, refetch };
+  return { bundle: data, loading, error, fromCache, online, refetch };
 }

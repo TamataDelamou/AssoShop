@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { financialGroupsService } from "@/services/finance/financialGroups";
 import { FinancialGroup } from "@/types/modules/finance";
-import { FINANCE_CONFIG, FINANCE_LABELS } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { FINANCE_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "finance",
+  cacheableReads: [FINANCE_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseGroups(data: FinancialGroup[]): FinancialGroup[] {
   return data.map((g) => ({
@@ -35,72 +40,17 @@ export function useFinancialGroups(
   search = "",
   type = "",
 ) {
-  const [groups, setGroups] = useState<FinancialGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
-
-  const cacheKey = `${FINANCE_CONFIG.CACHE_KEY_PREFIX}${organizationId}`;
-
-  const fetchRemote = useCallback(async (): Promise<FinancialGroup[]> => {
-    const data = await financialGroupsService.getFinancialGroups(
-      organizationId,
-      {
-        search: search || undefined,
-        type: type || undefined,
-      },
+  const cacheKey = `${FINANCE_CONFIG.CACHE_KEY_PREFIX}${organizationId}:${search || "_"}:${type || "_"}`;
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<FinancialGroup[]>(
+      cacheKey,
+      () =>
+        financialGroupsService.getFinancialGroups(organizationId, {
+          search: search || undefined,
+          type: type || undefined,
+        }),
+      { ttlMs: FINANCE_CONFIG.CACHE_TTL_MS, parse: parseGroups },
     );
-    return parseGroups(data);
-  }, [organizationId, search, type]);
 
-  const load = useCallback(async () => {
-    const cached = readCache<FinancialGroup[]>(cacheKey);
-    if (cached) {
-      setGroups(parseGroups(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setGroups(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, FINANCE_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error(FINANCE_LABELS.LOAD_ERROR, err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { groups, loading, error, fromCache, online, refetch };
+  return { groups: data ?? [], loading, error, fromCache, online, refetch };
 }

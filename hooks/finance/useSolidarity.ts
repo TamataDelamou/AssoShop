@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { solidarityService } from "@/services/finance/solidarity";
 import { SolidarityBundle } from "@/types/modules/finance";
-import { INSURANCE_CONFIG, INSURANCE_LABELS } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { INSURANCE_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "solidarity",
+  cacheableReads: [INSURANCE_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseBundle(data: SolidarityBundle): SolidarityBundle {
   return {
@@ -22,66 +27,12 @@ function parseBundle(data: SolidarityBundle): SolidarityBundle {
 }
 
 export function useSolidarity(organizationId: string) {
-  const [bundle, setBundle] = useState<SolidarityBundle | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<SolidarityBundle>(
+      `${INSURANCE_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      () => solidarityService.getSolidarity(organizationId),
+      { ttlMs: INSURANCE_CONFIG.CACHE_TTL_MS, parse: parseBundle },
+    );
 
-  const cacheKey = `${INSURANCE_CONFIG.CACHE_KEY_PREFIX}${organizationId}`;
-
-  const fetchRemote = useCallback(async (): Promise<SolidarityBundle> => {
-    const data = await solidarityService.getSolidarity(organizationId);
-    return parseBundle(data);
-  }, [organizationId]);
-
-  const load = useCallback(async () => {
-    const cached = readCache<SolidarityBundle>(cacheKey);
-    if (cached) {
-      setBundle(parseBundle(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setBundle(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, INSURANCE_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error(INSURANCE_LABELS.LOAD_ERROR, err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { bundle, loading, error, fromCache, online, refetch };
+  return { bundle: data, loading, error, fromCache, online, refetch };
 }

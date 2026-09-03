@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { catalogService } from "@/services/market/catalog";
 import { MarketCatalog } from "@/types/modules/market";
-import { MARKET_CONFIG, MARKET_MESSAGES } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { MARKET_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "market",
+  cacheableReads: [`${MARKET_CONFIG.CACHE_KEY_PREFIX}catalog`],
+  deferredMutations: [],
+});
 
 function parseCatalog(data: MarketCatalog): MarketCatalog {
   return {
@@ -22,66 +27,12 @@ function parseCatalog(data: MarketCatalog): MarketCatalog {
 }
 
 export function useCatalog() {
-  const [catalog, setCatalog] = useState<MarketCatalog | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<MarketCatalog>(
+      `${MARKET_CONFIG.CACHE_KEY_PREFIX}catalog`,
+      () => catalogService.getCatalog(),
+      { ttlMs: MARKET_CONFIG.CACHE_TTL_MS, parse: parseCatalog },
+    );
 
-  const cacheKey = `${MARKET_CONFIG.CACHE_KEY_PREFIX}catalog`;
-
-  const fetchRemote = useCallback(async (): Promise<MarketCatalog> => {
-    const data = await catalogService.getCatalog();
-    return parseCatalog(data);
-  }, []);
-
-  const load = useCallback(async () => {
-    const cached = readCache<MarketCatalog>(cacheKey);
-    if (cached) {
-      setCatalog(parseCatalog(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setCatalog(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, MARKET_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error(MARKET_MESSAGES.LOAD_ERROR, err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { catalog, loading, error, fromCache, online, refetch };
+  return { catalog: data, loading, error, fromCache, online, refetch };
 }
