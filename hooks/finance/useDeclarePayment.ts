@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { financialGroupsService } from "@/services/finance/financialGroups";
 import {
   DeclarePaymentPayload,
@@ -13,6 +13,7 @@ import { FINANCE_CONFIG, FINANCE_LABELS } from "@/utils/constants";
 import {
   enqueueSync,
   readCache,
+  registerReplayHandler,
   useNetworkStatus,
   writeCache,
 } from "@/lib/offline";
@@ -28,6 +29,25 @@ export function useDeclarePayment() {
   const [error, setError] = useState<string | null>(null);
   const [pendingSync, setPendingSync] = useState(false);
   const online = useNetworkStatus();
+
+  // Gestionnaire de rejeu pour la resynchronisation automatique.
+  useEffect(() => {
+    return registerReplayHandler(
+      FINANCE_CONFIG.SYNC_MODULE,
+      "declare_payment",
+      async (op) => {
+        const { organizationId, groupId, ...payload } = op as {
+          organizationId: string;
+          groupId: string;
+        } & DeclarePaymentPayload;
+        return financialGroupsService.declarePayment(
+          organizationId,
+          groupId,
+          payload,
+        );
+      },
+    );
+  }, []);
 
   const declarePayment = async (
     organizationId: string,

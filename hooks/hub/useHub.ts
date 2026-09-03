@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { hubService } from "@/services/hub/hub";
 import { HubBundle } from "@/types/modules/hub";
-import { HUB_CONFIG, HUB_MESSAGES } from "@/utils/constants";
-import { readCache, useNetworkStatus, writeCache } from "@/lib/offline";
+import { HUB_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+// Déclaration hors-ligne du module Hub : le bundle est consultable en cache,
+// aucune mutation n'est différée (lecture seule ici).
+declareOffline({
+  module: "hub",
+  cacheableReads: [`${HUB_CONFIG.CACHE_KEY_PREFIX}bundle`],
+  deferredMutations: [],
+});
 
 function parseBundle(data: HubBundle): HubBundle {
   return {
@@ -48,66 +55,12 @@ function parseBundle(data: HubBundle): HubBundle {
 }
 
 export function useHub() {
-  const [bundle, setBundle] = useState<HubBundle | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [fromCache, setFromCache] = useState(false);
-  const online = useNetworkStatus();
+  const { data, loading, error, fromCache, online, refetch } =
+    useOfflineQuery<HubBundle>(
+      `${HUB_CONFIG.CACHE_KEY_PREFIX}bundle`,
+      () => hubService.getBundle(),
+      { ttlMs: HUB_CONFIG.CACHE_TTL_MS, parse: parseBundle },
+    );
 
-  const cacheKey = `${HUB_CONFIG.CACHE_KEY_PREFIX}bundle`;
-
-  const fetchRemote = useCallback(async (): Promise<HubBundle> => {
-    const data = await hubService.getBundle();
-    return parseBundle(data);
-  }, []);
-
-  const load = useCallback(async () => {
-    const cached = readCache<HubBundle>(cacheKey);
-    if (cached) {
-      setBundle(parseBundle(cached));
-      setFromCache(true);
-      setLoading(false);
-    }
-
-    if (online) {
-      try {
-        const fresh = await fetchRemote();
-        setBundle(fresh);
-        setFromCache(false);
-        writeCache(cacheKey, fresh, HUB_CONFIG.CACHE_TTL_MS);
-      } catch (err) {
-        console.error(HUB_MESSAGES.LOAD_ERROR, err);
-        if (!cached) {
-          setError(err as Error);
-        }
-      }
-    }
-  }, [cacheKey, online, fetchRemote]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    await load();
-    setLoading(false);
-  }, [load]);
-
-  return { bundle, loading, error, fromCache, online, refetch };
+  return { bundle: data, loading, error, fromCache, online, refetch };
 }

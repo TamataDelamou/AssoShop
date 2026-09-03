@@ -90,15 +90,35 @@ export interface SyncResult {
   error?: string;
 }
 
+// Registre global des gestionnaires de rejeu (enregistrés par chaque module).
+// Permet le rejeu automatique à la reconnexion sans repasser les handlers.
+const replayHandlers = new Map<
+  string,
+  (payload: unknown) => Promise<unknown>
+>();
+
+export function registerReplayHandler(
+  module: string,
+  action: string,
+  handler: (payload: unknown) => Promise<unknown>,
+): () => void {
+  const key = `${module}:${action}`;
+  replayHandlers.set(key, handler);
+  return () => {
+    if (replayHandlers.get(key) === handler) replayHandlers.delete(key);
+  };
+}
+
 export async function processSyncQueue(
-  handlers: Record<string, (payload: unknown) => Promise<unknown>>,
+  handlers?: Record<string, (payload: unknown) => Promise<unknown>>,
 ): Promise<SyncResult[]> {
   const queue = readQueue();
   const results: SyncResult[] = [];
   const remaining: OfflineOperation[] = [];
 
   for (const op of queue) {
-    const handler = handlers[`${op.module}:${op.action}`];
+    const key = `${op.module}:${op.action}`;
+    const handler = handlers?.[key] ?? replayHandlers.get(key);
     if (!handler) {
       results.push({
         id: op.id,
