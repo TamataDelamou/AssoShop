@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { ensurePersonalWallet } from "@/lib/api/wallets";
 
 export async function POST(
   _request: Request,
@@ -27,20 +28,20 @@ export async function POST(
       return NextResponse.json({ error: "Commande déjà payée" }, { status: 400 });
     }
 
-    const { data: wallet } = await supabase
-      .from("market_wallets")
-      .select("balance")
-      .eq("user_id", user.id)
-      .maybeSingle();
-    const balance = wallet?.balance ?? 0;
-    if (balance < order.total) {
+    const wallet = await ensurePersonalWallet(supabase, user.id);
+    if (wallet.balance < order.total) {
       return NextResponse.json({ error: "Solde insuffisant" }, { status: 400 });
     }
 
+    const newBalance = wallet.balance - order.total;
     const { error: walletError } = await supabase
-      .from("market_wallets")
-      .update({ balance: balance - order.total })
-      .eq("user_id", user.id);
+      .from("pay_wallets")
+      .update({
+        balance: newBalance,
+        last_known_balance: newBalance,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", wallet.id);
     if (walletError) throw walletError;
 
     const { data: updated, error: updateError } = await supabase

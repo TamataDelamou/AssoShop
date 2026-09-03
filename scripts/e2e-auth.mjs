@@ -129,6 +129,23 @@ async function main() {
   r = await req("/api/pay/bundle", { cookie });
   results.push(["GET /api/pay/bundle (auth)", r.status === 200 && Array.isArray(r.json?.wallets), r.status]);
 
+  r = await req("/api/market/wallet", { cookie });
+  results.push(["GET /api/market/wallet (auto-création)", r.status === 200 && r.json?.balance === 0, r.status]);
+
+  r = await req("/api/pay/topup", {
+    method: "POST",
+    cookie,
+    body: { amount: 10000, provider: "Orange Money" },
+  });
+  results.push(["POST /api/pay/topup (sans wallet_id)", r.status === 200 && r.json?.status === "confirmed", r.status]);
+
+  r = await req("/api/market/wallet", { cookie });
+  results.push(["GET /api/market/wallet (solde unifié)", r.status === 200 && r.json?.balance === 9950, r.status]);
+
+  r = await req("/api/pay/bundle", { cookie });
+  const personalWallet = (r.json?.wallets ?? []).find((w) => w.type === "personal");
+  results.push(["GET /api/pay/bundle (portefeuille unifié)", r.status === 200 && personalWallet?.balance === 9950, r.status]);
+
   r = await req("/api/hub/bundle", { cookie });
   results.push(["GET /api/hub/bundle (auth)", r.status === 200 && !!r.json?.profile, r.status]);
 

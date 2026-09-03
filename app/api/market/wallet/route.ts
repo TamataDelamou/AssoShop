@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { ensurePersonalWallet } from "@/lib/api/wallets";
 
 export async function GET() {
   const ctx = await getAuthedContext();
@@ -7,22 +8,7 @@ export async function GET() {
   const { supabase, user } = ctx;
 
   try {
-    let { data: wallet } = await supabase
-      .from("market_wallets")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (!wallet) {
-      const { data: created, error } = await supabase
-        .from("market_wallets")
-        .insert({ user_id: user.id, balance: 0, currency: "GNF" })
-        .select()
-        .single();
-      if (error) throw error;
-      wallet = created;
-    }
-
+    const wallet = await ensurePersonalWallet(supabase, user.id);
     return NextResponse.json({
       balance: wallet.balance,
       currency: wallet.currency,

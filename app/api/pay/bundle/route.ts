@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
 import { getFinancialSituation } from "@/lib/api/situation";
+import { ensurePersonalWallet } from "@/lib/api/wallets";
 
 export async function GET() {
   const ctx = await getAuthedContext();
@@ -8,6 +9,8 @@ export async function GET() {
   const { supabase, user } = ctx;
 
   try {
+    await ensurePersonalWallet(supabase, user.id);
+
     const [wallets, transactions, methods, reconciliation, settings] =
       await Promise.all([
         supabase

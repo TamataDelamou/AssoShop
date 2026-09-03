@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
 import { generateReference, serviceFee } from "@/lib/pay";
+import { getWallet } from "@/lib/api/wallets";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
@@ -20,12 +21,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
     }
 
-    const { data: wallet } = await supabase
-      .from("pay_wallets")
-      .select("*")
-      .eq("id", payload?.wallet_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const wallet = await getWallet(supabase, user.id, payload?.wallet_id);
     if (!wallet) {
       return NextResponse.json(
         { error: "Portefeuille introuvable" },
