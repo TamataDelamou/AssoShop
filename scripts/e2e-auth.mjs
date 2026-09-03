@@ -109,13 +109,14 @@ async function main() {
   for (let i = 0; i < 30; i++) {
     try {
       const r = await fetch(BASE_URL + "/api/market/catalog");
-      if (r.status) {
+      if (r.status === 200 || r.status === 401) {
         ready = true;
         break;
       }
     } catch {
-      await new Promise((r) => setTimeout(r, 500));
+      /* pas encore prêt */
     }
+    await new Promise((r) => setTimeout(r, 500));
   }
   if (!ready) throw new Error("serveur non démarré sur " + BASE_URL);
   console.log("   serveur prêt");
@@ -148,6 +149,56 @@ async function main() {
 
   r = await req("/api/hub/bundle", { cookie });
   results.push(["GET /api/hub/bundle (auth)", r.status === 200 && !!r.json?.profile, r.status]);
+
+  r = await req("/api/hub/referrals", {
+    method: "POST",
+    cookie,
+    body: { referred_name: "Fatoumata Camara" },
+  });
+  const referralId = r.json?.id;
+  results.push([
+    "POST /api/hub/referrals (producteur)",
+    r.status === 201 && !!referralId && r.json?.status === "pending",
+    r.status,
+  ]);
+
+  r = await req(`/api/hub/referrals/${referralId}/convert`, {
+    method: "POST",
+    cookie,
+  });
+  results.push([
+    "POST /api/hub/referrals/convert (activation)",
+    r.status === 200 && r.json?.status === "active" && r.json?.reward === 2000,
+    r.status,
+  ]);
+
+  r = await req("/api/hub/sync", {
+    method: "POST",
+    cookie,
+    body: { action: "Test hors-ligne", module: "community" },
+  });
+  results.push([
+    "POST /api/hub/sync (producteur)",
+    r.status === 201 && r.json?.status === "pending",
+    r.status,
+  ]);
+
+  r = await req("/api/hub/sync/retry", { method: "POST", cookie });
+  results.push([
+    "POST /api/hub/sync/retry (synced)",
+    r.status === 200 && (r.json ?? []).every((s) => s.status === "synced"),
+    r.status,
+  ]);
+
+  r = await req("/api/hub/bundle", { cookie });
+  const referralActive = (r.json?.referrals ?? []).some(
+    (x) => x.id === referralId && x.status === "active",
+  );
+  results.push([
+    "GET /api/hub/bundle (parrainage + synchro)",
+    r.status === 200 && referralActive && (r.json?.sync_queue ?? []).length >= 1,
+    r.status,
+  ]);
 
   r = await req("/api/hub/favorites/toggle", {
     method: "POST",

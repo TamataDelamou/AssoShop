@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
 import { declarePayment } from "@/lib/api/finance";
+import { enqueueSync } from "@/lib/api/hub-producers";
 
 export async function POST(
   request: NextRequest,
@@ -27,6 +28,12 @@ export async function POST(
         { status: 404 },
       );
     }
+    await enqueueSync(
+      supabase,
+      ctx.user.id,
+      "Déclaration de paiement en espèces",
+      "community",
+    ).catch(() => null);
     return NextResponse.json(group);
   } catch (err) {
     return apiError(err);

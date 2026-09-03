@@ -73,13 +73,14 @@ async function main() {
   for (let i = 0; i < 30; i++) {
     try {
       const r = await fetch(BASE_URL + "/api/organizations");
-      if (r.status) {
+      if (r.status === 200 || r.status === 401) {
         ready = true;
         break;
       }
     } catch {
-      await new Promise((r) => setTimeout(r, 500));
+      /* pas encore prêt */
     }
+    await new Promise((r) => setTimeout(r, 500));
   }
   if (!ready) throw new Error("serveur non démarré");
 
@@ -160,6 +161,34 @@ async function main() {
       "hub groups_count = 1",
       hub.status === 200 && hub.json?.home?.groups_count === 1,
       hub.status,
+    ]);
+
+    const payment = await req(
+      `/api/organizations/${orgId}/financial-groups/${groupId}/payments`,
+      {
+        method: "POST",
+        cookie,
+        body: {
+          member_id: group.json?.members?.[0]?.id,
+          amount: 10000,
+          method: "cash",
+        },
+      },
+    );
+    linkResults.push([
+      "déclaration paiement groupe",
+      payment.status === 200,
+      payment.status,
+    ]);
+
+    const hub2 = await req("/api/hub/bundle", { cookie });
+    const hasSync = (hub2.json?.sync_queue ?? []).some(
+      (s) => s.action === "Déclaration de paiement en espèces",
+    );
+    linkResults.push([
+      "synchro paiement enregistrée",
+      hub2.status === 200 && hasSync,
+      hub2.status,
     ]);
   }
 
