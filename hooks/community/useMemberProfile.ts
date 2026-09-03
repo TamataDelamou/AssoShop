@@ -1,39 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { memberProfilesService } from "@/services/community/memberProfiles";
 import { MemberProfile } from "@/types/modules/community";
+import { MEMBER_CONFIG } from "@/utils/constants";
+import { useOfflineQuery } from "@/lib/offline";
 
 export function useMemberProfile(
   organizationId: string,
   memberId: string | null,
 ) {
-  const [profile, setProfile] = useState<MemberProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const { data, loading, error } = useOfflineQuery<MemberProfile>(
+    `${MEMBER_CONFIG.CACHE_KEY_PREFIX}${organizationId}:${memberId ?? "null"}:profile`,
+    () =>
+      memberProfilesService.getProfile(organizationId, memberId as string),
+    {
+      ttlMs: MEMBER_CONFIG.CACHE_TTL_MS,
+      enabled: memberId !== null,
+    },
+  );
 
-  useEffect(() => {
-    if (!memberId) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await memberProfilesService.getProfile(
-          organizationId,
-          memberId,
-        );
-        if (!cancelled) setProfile(data);
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [organizationId, memberId]);
-
-  return { profile, loading, error };
+  return { profile: data, loading, error };
 }

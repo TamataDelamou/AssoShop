@@ -173,6 +173,12 @@ export type OrganizationType = (typeof ORGANIZATION_TYPES)[number]["value"];
 // ============================================
 // 6. MEMBRES (Module Community)
 // ============================================
+export const MEMBER_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60, // 1 heure de cache local pour la liste
+  CACHE_KEY_PREFIX: "members:",
+  SYNC_MODULE: "members",
+};
+
 export const MEMBER_LABELS = {
   PAGE_TITLE: "Membres",
   SEARCH_PLACEHOLDER: "Rechercher un membre...",
@@ -331,6 +337,9 @@ export const CONTRIBUTION_CONFIG = {
   DEFAULT_AMOUNT: 50000,
   // RG-C04 : double validation (président + trésorier) au-delà du seuil.
   DOUBLE_VALIDATION_THRESHOLD: 5000000,
+  CACHE_TTL_MS: 1000 * 60 * 60, // 1 heure de cache local pour la liste
+  CACHE_KEY_PREFIX: "contributions:",
+  SYNC_MODULE: "contributions",
 };
 
 export const CONTRIBUTION_MESSAGES = {
@@ -449,6 +458,9 @@ export const SOCIAL_CASE_TYPES: { value: SocialCaseType; label: string }[] = [
 export const SOCIAL_CASE_CONFIG = {
   CURRENCY: "GNF",
   DEFAULT_TARGET: 1000000,
+  CACHE_TTL_MS: 1000 * 60 * 60, // 1 heure de cache local pour la liste
+  CACHE_KEY_PREFIX: "social-cases:",
+  SYNC_MODULE: "social-cases",
 };
 
 export const SOCIAL_CASE_MESSAGES = {

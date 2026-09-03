@@ -1,62 +1,30 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
 import { membersService } from "@/services/community/members";
 import { Member } from "@/types/modules/community";
-import { MEMBER_LABELS } from "@/utils/constants";
+import { MEMBER_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "members",
+  cacheableReads: [MEMBER_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
+
+function parseMembers(data: Member[]): Member[] {
+  return data.map((m) => ({
+    ...m,
+    joined_at: m.joined_at ? new Date(m.joined_at) : null,
+  }));
+}
 
 export function useMembers(organizationId: string, search = "") {
-  const [members, setMembers] = useState<Member[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const cacheKey = `${MEMBER_CONFIG.CACHE_KEY_PREFIX}${organizationId}:${search || "_"}`;
+  const { data, loading, error, refetch } = useOfflineQuery<Member[]>(
+    cacheKey,
+    () => membersService.getMembers(organizationId, search),
+    { ttlMs: MEMBER_CONFIG.CACHE_TTL_MS, parse: parseMembers },
+  );
 
-  const loadMembers = useCallback(async (): Promise<Member[]> => {
-    const data = await membersService.getMembers(organizationId, search);
-    return data.map((m) => ({
-      ...m,
-      joined_at: m.joined_at ? new Date(m.joined_at) : null,
-    }));
-  }, [organizationId, search]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const parsed = await loadMembers();
-        if (!cancelled) {
-          setMembers(parsed);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.error(MEMBER_LABELS.ERROR_UPDATE, err);
-          setError(err as Error);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [loadMembers]);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const parsed = await loadMembers();
-      setMembers(parsed);
-    } catch (err) {
-      console.error(MEMBER_LABELS.ERROR_UPDATE, err);
-      setError(err as Error);
-    } finally {
-      setLoading(false);
-    }
-  }, [loadMembers]);
-
-  return { members, loading, error, refetch };
+  return { members: data ?? [], loading, error, refetch };
 }

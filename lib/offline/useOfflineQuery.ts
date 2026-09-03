@@ -12,6 +12,8 @@ export interface UseOfflineQueryOptions<T> {
   staleMs?: number;
   // Normalisation des données relues du cache (ex. conversion de dates).
   parse?: (data: T) => T;
+  // Si false, aucun fetch n'est lancé (utile pour les ids optionnels).
+  enabled?: boolean;
 }
 
 export interface UseOfflineQueryResult<T> {
@@ -31,7 +33,12 @@ export function useOfflineQuery<T>(
   fetcher: () => Promise<T>,
   options: UseOfflineQueryOptions<T> = {},
 ): UseOfflineQueryResult<T> {
-  const { ttlMs = DEFAULT_TTL_MS, staleMs = DEFAULT_STALE_MS, parse } = options;
+  const {
+    ttlMs = DEFAULT_TTL_MS,
+    staleMs = DEFAULT_STALE_MS,
+    parse,
+    enabled = true,
+  } = options;
   const online = useNetworkStatus();
 
   const [data, setData] = useState<T | null>(() => {
@@ -77,6 +84,11 @@ export function useOfflineQuery<T>(
     let cancelled = false;
 
     (async () => {
+      if (!enabled) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
+
       const entry = readCacheEntry<T>(key);
 
       if (entry) {
@@ -117,7 +129,7 @@ export function useOfflineQuery<T>(
     return () => {
       cancelled = true;
     };
-  }, [key, online, ttlMs, fetchFresh]);
+  }, [key, online, ttlMs, fetchFresh, enabled]);
 
   return { data, loading, error, fromCache, online, refetch };
 }
