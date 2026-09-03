@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { ENV_CONFIG } from "@/lib/env.config";
 
@@ -25,5 +26,15 @@ export async function createSupabaseServerClient() {
         },
       },
     },
+  );
+}
+
+// Client serveur avec la clé service_role : contourne RLS, réservé aux
+// routes d'administration (jamais exposé côté client).
+export function createSupabaseAdminClient() {
+  return createClient(
+    ENV_CONFIG.SUPABASE_URL,
+    ENV_CONFIG.SUPABASE_SERVICE_ROLE_KEY,
+    { auth: { persistSession: false, autoRefreshToken: false } },
   );
 }
