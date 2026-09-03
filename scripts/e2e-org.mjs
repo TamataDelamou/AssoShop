@@ -133,7 +133,78 @@ async function main() {
     );
   }
 
-  console.log("5. Nettoyage");
+  console.log("5. Liaison nom -> auth.users (situation Pay + groupes Hub)");
+  const linkResults = [];
+
+  const group = await req(`/api/organizations/${orgId}/financial-groups`, {
+    method: "POST",
+    cookie,
+    body: {
+      name: "Groupe E2E",
+      type: "savings",
+      amount: 10000,
+      periodicity: "weekly",
+      max_members: 10,
+    },
+  });
+  const groupId = group.json?.id;
+  linkResults.push([
+    "création groupe",
+    group.status === 201 && !!groupId,
+    group.status,
+  ]);
+
+  if (groupId) {
+    const hub = await req("/api/hub/bundle", { cookie });
+    linkResults.push([
+      "hub groups_count = 1",
+      hub.status === 200 && hub.json?.home?.groups_count === 1,
+      hub.status,
+    ]);
+  }
+
+  const member = await req(`/api/organizations/${orgId}/members`, {
+    method: "POST",
+    cookie,
+    body: { role: "member", email: EMAIL, user_id: userId },
+  });
+  const memberId = member.json?.id;
+  linkResults.push([
+    "création membre lié",
+    member.status === 201 && !!memberId,
+    member.status,
+  ]);
+
+  if (memberId) {
+    const contrib = await req(`/api/organizations/${orgId}/contributions`, {
+      method: "POST",
+      cookie,
+      body: {
+        beneficiary_member_id: memberId,
+        amount: 50000,
+        method: "online",
+      },
+    });
+    linkResults.push([
+      "cotisation enregistrée",
+      contrib.status === 201,
+      contrib.status,
+    ]);
+
+    const pay = await req("/api/pay/bundle", { cookie });
+    linkResults.push([
+      "situation.contributions = 50000",
+      pay.status === 200 && pay.json?.situation?.contributions === 50000,
+      pay.status,
+    ]);
+  }
+
+  for (const [label, ok, status] of linkResults) {
+    if (!ok) failures++;
+    console.log(`  [${ok ? "PASS" : "FAIL"}] ${label} (HTTP ${status})`);
+  }
+
+  console.log("6. Nettoyage");
   await admin.from("organizations").delete().eq("id", orgId);
   await admin.auth.admin.deleteUser(userId);
   console.log("   org + utilisateur supprimés");

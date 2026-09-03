@@ -336,6 +336,7 @@ export async function createGroup(
     goal_amount?: number | null;
     interest_rate?: number | null;
     start_date?: string | null;
+    creator_user_id?: string | null;
     turn_member_names?: string[];
   },
 ): Promise<FinancialGroup> {
@@ -376,6 +377,7 @@ export async function createGroup(
   const memberRows = [
     {
       group_id: group.id,
+      user_id: payload.creator_user_id ?? null,
       name: "Bureau de l'association",
       role: "creator",
       engagement: "reliable",
@@ -384,6 +386,7 @@ export async function createGroup(
     },
     ...names.map((name) => ({
       group_id: group.id,
+      user_id: null,
       name,
       role: "member",
       engagement: "reliable",

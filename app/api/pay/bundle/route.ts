@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { getFinancialSituation } from "@/lib/api/situation";
 
 export async function GET() {
   const ctx = await getAuthedContext();
@@ -43,19 +44,14 @@ export async function GET() {
 
     const settingsRow = settings.data;
 
+    const situation = await getFinancialSituation(supabase, user.id);
+
     return NextResponse.json({
       wallets: wallets.data ?? [],
       transactions: transactions.data ?? [],
       methods: methods.data ?? [],
       reconciliation: reconciliation.data ?? [],
-      situation: {
-        contributions: 0,
-        savings: 0,
-        tontine: 0,
-        aids_received: 0,
-        loans_outstanding: 0,
-        currency: "GNF",
-      },
+      situation,
       settings: {
         default_provider: settingsRow?.default_provider ?? "",
         max_transaction_amount: settingsRow?.max_transaction_amount ?? 5000000,

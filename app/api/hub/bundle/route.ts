@@ -50,6 +50,7 @@ export async function GET() {
         .from("pay_transactions")
         .select("type, amount, created_at")
         .eq("user_id", user.id),
+      supabase.from("group_members").select("group_id").eq("user_id", user.id),
     ]);
     for (const r of results) {
       if (r.error) throw r.error;
@@ -67,6 +68,7 @@ export async function GET() {
       referrals,
       syncQueue,
       payTxs,
+      groupMembers,
     ] = results;
 
     const orgIds = (memberships.data ?? []).map((m) => m.organization_id);
@@ -102,6 +104,10 @@ export async function GET() {
       .filter((t) => t.type === "withdrawal" && t.created_at >= monthStartIso)
       .reduce((sum, t) => sum + (t.amount ?? 0), 0);
 
+    const groupsCount = new Set(
+      (groupMembers.data ?? []).map((g) => g.group_id),
+    ).size;
+
     const p = profile.data;
 
     return NextResponse.json({
@@ -120,7 +126,7 @@ export async function GET() {
       },
       home: {
         associations_count: membershipList.length,
-        groups_count: 0,
+        groups_count: groupsCount,
         pending_invitations: 0,
         monthly_income: monthlyIncome,
         monthly_expenses: monthlyExpenses,

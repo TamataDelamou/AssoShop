@@ -28,7 +28,7 @@ export async function POST(
 ) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase } = ctx;
+  const { supabase, user } = ctx;
 
   const { orgId } = await params;
   const payload = await request.json().catch(() => null);
@@ -46,7 +46,10 @@ export async function POST(
   }
 
   try {
-    const group = await createGroup(supabase, orgId, payload);
+    const group = await createGroup(supabase, orgId, {
+      ...payload,
+      creator_user_id: user.id,
+    });
     return NextResponse.json(group, { status: 201 });
   } catch (err) {
     return apiError(err);
