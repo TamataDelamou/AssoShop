@@ -1988,3 +1988,42 @@ export const PLATFORM_USER_STATUS_LABELS: Record<PlatformUserStatus, string> = {
   [PlatformUserStatus.ACTIVE]: "Actif",
   [PlatformUserStatus.SUSPENDED]: "Suspendu",
 };
+
+// ============================================
+// CACHE HORS-LIGNE (lectures différées par module)
+// ============================================
+export const ASSET_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "assets:",
+  SYNC_MODULE: "assets",
+};
+
+export const EVENT_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "events:",
+  SYNC_MODULE: "events",
+};
+
+export const SIGNATURE_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "signatures:",
+  SYNC_MODULE: "signatures",
+};
+
+export const TREASURY_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "treasury:",
+  SYNC_MODULE: "treasury",
+};
+
+export const SPONSORSHIP_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "sponsorship:",
+  SYNC_MODULE: "sponsorship",
+};
+
+export const MOBILITY_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 60,
+  CACHE_KEY_PREFIX: "mobility:",
+  SYNC_MODULE: "mobility",
+};

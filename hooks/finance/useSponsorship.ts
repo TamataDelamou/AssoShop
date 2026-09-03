@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { sponsorshipService } from "@/services/finance/sponsorship";
 import {
   CreateSponsorshipRequestPayload,
   SponsorshipBundle,
 } from "@/types/modules/finance";
+import { SPONSORSHIP_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "sponsorship",
+  cacheableReads: [SPONSORSHIP_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseBundle(data: SponsorshipBundle): SponsorshipBundle {
   return {
@@ -38,86 +46,69 @@ function parseBundle(data: SponsorshipBundle): SponsorshipBundle {
 }
 
 export function useSponsorship(organizationId: string) {
-  const [bundle, setBundle] = useState<SponsorshipBundle | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<SponsorshipBundle>(
+      `${SPONSORSHIP_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      () => sponsorshipService.getSponsorship(organizationId),
+      { ttlMs: SPONSORSHIP_CONFIG.CACHE_TTL_MS, parse: parseBundle },
+    );
 
-  const load = useCallback(async () => {
-    const data = await sponsorshipService.getSponsorship(organizationId);
-    setBundle(parseBundle(data));
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        await load();
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const create = useCallback(
     async (payload: CreateSponsorshipRequestPayload) => {
       setBusy(true);
-      setError(null);
+      setActionError(null);
       try {
         await sponsorshipService.createRequest(organizationId, payload);
-        await load();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusy(false);
       }
     },
-    [organizationId, load],
+    [organizationId, refresh],
   );
 
   const respond = useCallback(
     async (requestId: string, decision: "accept" | "decline") => {
       setBusy(true);
-      setError(null);
+      setActionError(null);
       try {
         await sponsorshipService.respond(organizationId, requestId, {
           decision,
         });
-        await load();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusy(false);
       }
     },
-    [organizationId, load],
+    [organizationId, refresh],
   );
 
   const confirm = useCallback(
     async (requestId: string) => {
       setBusy(true);
-      setError(null);
+      setActionError(null);
       try {
         await sponsorshipService.confirm(organizationId, requestId);
-        await load();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusy(false);
       }
     },
-    [organizationId, load],
+    [organizationId, refresh],
   );
 
-  return { bundle, loading, busy, error, create, respond, confirm };
+  return { bundle: data, loading, busy, error, create, respond, confirm };
 }

@@ -23,6 +23,7 @@ export interface UseOfflineQueryResult<T> {
   fromCache: boolean;
   online: boolean;
   refetch: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 const DEFAULT_TTL_MS = 60_000;
@@ -80,6 +81,16 @@ export function useOfflineQuery<T>(
     }
   }, [fetchFresh]);
 
+  // Revalidation silencieuse (sans bascule de `loading`) : utilisée par les
+  // mutations pour resynchroniser le cache après une écriture.
+  const refresh = useCallback(async () => {
+    try {
+      await fetchFresh();
+    } catch (err) {
+      setError(err as Error);
+    }
+  }, [fetchFresh]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -131,5 +142,5 @@ export function useOfflineQuery<T>(
     };
   }, [key, online, ttlMs, fetchFresh, enabled]);
 
-  return { data, loading, error, fromCache, online, refetch };
+  return { data, loading, error, fromCache, online, refetch, refresh };
 }

@@ -1,12 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { assetsService } from "@/services/community/assets";
 import {
   Asset,
   AssetStatus,
   CreateAssetPayload,
 } from "@/types/modules/community";
+import { ASSET_CONFIG } from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
+
+declareOffline({
+  module: "assets",
+  cacheableReads: [ASSET_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseAsset(asset: Asset): Asset {
   return {
@@ -18,76 +26,52 @@ function parseAsset(asset: Asset): Asset {
 }
 
 export function useAssets(organizationId: string) {
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } = useOfflineQuery<
+    Asset[]
+  >(
+    `${ASSET_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+    () => assetsService.getAssets(organizationId),
+    { ttlMs: ASSET_CONFIG.CACHE_TTL_MS, parse: (list) => list.map(parseAsset) },
+  );
 
-  const load = useCallback(async () => {
-    const data = await assetsService.getAssets(organizationId);
-    return data.map(parseAsset);
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) setAssets(data);
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    try {
-      setAssets(await load());
-    } catch (err) {
-      setError(err as Error);
-    }
-  }, [load]);
+  const error = actionError ?? loadError;
+  const assets = data ?? [];
 
   const createAsset = useCallback(
     async (payload: CreateAssetPayload) => {
       setCreating(true);
-      setError(null);
+      setActionError(null);
       try {
         await assetsService.createAsset(organizationId, payload);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setCreating(false);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const updateStatus = useCallback(
     async (assetId: string, status: AssetStatus) => {
       setBusyId(assetId);
-      setError(null);
+      setActionError(null);
       try {
         await assetsService.updateAssetStatus(organizationId, assetId, status);
-        await refetch();
+        await refresh();
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const totalValue = assets.reduce(

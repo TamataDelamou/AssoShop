@@ -1,9 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { mobilityService } from "@/services/community/mobility";
 import { aiAssistant } from "@/lib/ai";
-import { ENGAGEMENT_LEVEL_OPTIONS } from "@/utils/constants";
+import {
+  ENGAGEMENT_LEVEL_OPTIONS,
+  MOBILITY_CONFIG,
+} from "@/utils/constants";
+import { declareOffline, useOfflineQuery } from "@/lib/offline";
 import {
   DecideTransferPayload,
   GenerateMobilityReportPayload,
@@ -11,6 +15,12 @@ import {
   MobilityReport,
   TransferDecision,
 } from "@/types/modules/community";
+
+declareOffline({
+  module: "mobility",
+  cacheableReads: [MOBILITY_CONFIG.CACHE_KEY_PREFIX],
+  deferredMutations: [],
+});
 
 function parseReport(r: MobilityReport): MobilityReport {
   return {
@@ -26,91 +36,71 @@ function parseDecision(d: TransferDecision): TransferDecision {
   };
 }
 
+interface MobilityBundle {
+  reports: MobilityReport[];
+  decisions: TransferDecision[];
+}
+
 export function useMobility(organizationId: string) {
-  const [reports, setReports] = useState<MobilityReport[]>([]);
-  const [decisions, setDecisions] = useState<TransferDecision[]>([]);
-  const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
+  const { data, loading, error: loadError, refresh } =
+    useOfflineQuery<MobilityBundle>(
+      `${MOBILITY_CONFIG.CACHE_KEY_PREFIX}${organizationId}`,
+      () => mobilityService.getBundle(organizationId),
+      {
+        ttlMs: MOBILITY_CONFIG.CACHE_TTL_MS,
+        parse: (bundle) => ({
+          reports: bundle.reports.map(parseReport),
+          decisions: bundle.decisions.map(parseDecision),
+        }),
+      },
+    );
 
-  const load = useCallback(async () => {
-    const bundle = await mobilityService.getBundle(organizationId);
-    return {
-      reports: bundle.reports.map(parseReport),
-      decisions: bundle.decisions.map(parseDecision),
-    };
-  }, [organizationId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const data = await load();
-        if (!cancelled) {
-          setReports(data.reports);
-          setDecisions(data.decisions);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err as Error);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  const refetch = useCallback(async () => {
-    const data = await load();
-    setReports(data.reports);
-    setDecisions(data.decisions);
-  }, [load]);
+  const error = actionError ?? loadError;
 
   const generateReport = useCallback(
     async (relocationId: string, payload: GenerateMobilityReportPayload) => {
       setBusyId(relocationId);
-      setError(null);
+      setActionError(null);
       try {
         const report = await mobilityService.generateReport(
           organizationId,
           relocationId,
           payload,
         );
-        await refetch();
+        await refresh();
         return report;
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   const decide = useCallback(
     async (relocationId: string, payload: DecideTransferPayload) => {
       setBusyId(relocationId);
-      setError(null);
+      setActionError(null);
       try {
         const decision = await mobilityService.decide(
           organizationId,
           relocationId,
           payload,
         );
-        await refetch();
+        await refresh();
         return decision;
       } catch (err) {
-        setError(err as Error);
+        setActionError(err as Error);
         throw err;
       } finally {
         setBusyId(null);
       }
     },
-    [organizationId, refetch],
+    [organizationId, refresh],
   );
 
   // Synthèse IA locale du rapport de mobilité (point d'entrée unique).
@@ -134,8 +124,8 @@ export function useMobility(organizationId: string) {
   );
 
   return {
-    reports,
-    decisions,
+    reports: data?.reports ?? [],
+    decisions: data?.decisions ?? [],
     loading,
     busyId,
     error,
