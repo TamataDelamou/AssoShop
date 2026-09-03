@@ -129,6 +129,23 @@ async function main() {
   r = await req("/api/pay/bundle", { cookie });
   results.push(["GET /api/pay/bundle (auth)", r.status === 200 && Array.isArray(r.json?.wallets), r.status]);
 
+  r = await req("/api/hub/bundle", { cookie });
+  results.push(["GET /api/hub/bundle (auth)", r.status === 200 && !!r.json?.profile, r.status]);
+
+  r = await req("/api/hub/favorites/toggle", {
+    method: "POST",
+    cookie,
+    body: { type: "product", label: "Produit E2E", detail: "test" },
+  });
+  results.push(["POST /api/hub/favorites/toggle", r.status === 200 && Array.isArray(r.json), r.status]);
+
+  r = await req("/api/hub/profile", {
+    method: "POST",
+    cookie,
+    body: { city: "Conakry", language: "Français" },
+  });
+  results.push(["POST /api/hub/profile", r.status === 200 && r.json?.city === "Conakry", r.status]);
+
   await admin.from("platform_admins").delete().eq("user_id", userId);
   r = await req("/api/admin/bundle", { cookie });
   results.push(["GET /api/admin/bundle (non-admin)", r.status === 403, r.status]);
