@@ -163,6 +163,13 @@ async function main() {
   r = await req("/api/admin/bundle", { cookie });
   results.push(["GET /api/admin/bundle (admin)", r.status === 200 && !!r.json?.dashboard, r.status]);
 
+  r = await req("/api/admin/config", {
+    method: "POST",
+    cookie,
+    body: { platform_name: "AssoShop" },
+  });
+  results.push(["POST /api/admin/config (audit)", r.status === 200 && !!r.json?.platform_name, r.status]);
+
   console.log("\n=== Résultats E2E ===");
   let ok = true;
   for (const [label, verdict, status] of results) {

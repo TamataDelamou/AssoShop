@@ -22,8 +22,26 @@ export async function POST(request: Request) {
     return Response.json({ error: "INVALID_PIN" }, { status: 400 });
   }
 
+  const { data: profile } = await supabase
+    .from("user_profiles")
+    .select("pin_locked_until")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (
+    profile?.pin_locked_until &&
+    new Date(profile.pin_locked_until) > new Date()
+  ) {
+    return Response.json({ error: "PIN_LOCKED" }, { status: 429 });
+  }
+
   const { error } = await supabase.from("user_profiles").upsert(
-    { user_id: user.id, pin_hash: hashPin(pin) },
+    {
+      user_id: user.id,
+      pin_hash: hashPin(pin),
+      pin_attempts: 0,
+      pin_locked_until: null,
+    },
     { onConflict: "user_id" },
   );
 

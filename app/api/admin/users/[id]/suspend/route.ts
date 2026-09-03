@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 export async function POST(
   _request: Request,
@@ -22,6 +22,8 @@ export async function POST(
       ban_duration: banned ? "none" : "876600h",
     });
     if (error) throw error;
+
+    await logAudit(ctx, `toggle_suspend_user:${id}`, "users");
 
     const { data: listData } = await supabase.auth.admin.listUsers({
       page: 1,

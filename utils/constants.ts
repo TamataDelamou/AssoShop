@@ -98,6 +98,8 @@ export const AUTH_CONFIG = {
   PIN_LENGTH: 4,
   RESEND_COOLDOWN_SECONDS: 60, // Délai avant de pouvoir renvoyer un OTP
   SESSION_TIMEOUT_MINUTES: 30, // Durée de validité de la session
+  MAX_PIN_ATTEMPTS: 5, // Tentatives de PIN avant verrouillage
+  PIN_LOCK_MINUTES: 15, // Durée du verrouillage après échecs répétés
 };
 
 // ============================================

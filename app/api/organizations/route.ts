@@ -67,28 +67,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Nom et type requis" }, { status: 400 });
   }
 
-  const { data: org, error } = await supabase
-    .from("organizations")
-    .insert({
-      name: payload.name,
-      type: payload.type,
-      city: payload.city ?? null,
-      object: payload.object ?? null,
-      status: "pending",
-    })
-    .select()
-    .single();
+  // Id généré côté serveur : évite le RETURNING post-insert, bloqué par RLS
+  // (l'utilisateur n'est membre qu'après la création de l'adhésion ci-dessous).
+  const orgId = crypto.randomUUID();
 
-  if (error || !org) {
-    return NextResponse.json(
-      { error: error?.message ?? "Erreur de création" },
-      { status: 500 },
-    );
+  const { error } = await supabase.from("organizations").insert({
+    id: orgId,
+    name: payload.name,
+    type: payload.type,
+    city: payload.city ?? null,
+    object: payload.object ?? null,
+    status: "pending",
+  });
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   // Le créateur devient admin de l'organisation.
   const { error: membershipError } = await supabase.from("memberships").insert({
-    organization_id: org.id,
+    organization_id: orgId,
     user_id: user.id,
     role: "admin",
   });
@@ -100,7 +98,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return NextResponse.json(serializeOrganization(org as OrganizationRow), {
-    status: 201,
-  });
+  return NextResponse.json(
+    {
+      id: orgId,
+      name: payload.name,
+      type: payload.type,
+      city: payload.city ?? null,
+      object: payload.object ?? null,
+      status: "pending",
+      memberCount: 1,
+      created_at: null,
+      updated_at: null,
+    },
+    { status: 201 },
+  );
 }

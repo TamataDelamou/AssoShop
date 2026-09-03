@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 export async function POST(
   _request: Request,
@@ -25,6 +25,8 @@ export async function POST(
       .from("admin_countries")
       .update({ status: country.status === "active" ? "inactive" : "active" })
       .eq("id", id);
+
+    await logAudit(ctx, `toggle_country:${id}`, "config");
 
     const { data: list } = await supabase
       .from("admin_countries")

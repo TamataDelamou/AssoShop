@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAdminContext();
@@ -31,6 +31,8 @@ export async function POST(request: NextRequest) {
       parent_id: payload.parent ?? null,
     });
     if (error) throw error;
+
+    await logAudit(ctx, `create_category:${payload.name}`, "market");
 
     const [{ data: list }, { data: products }] = await Promise.all([
       supabase.from("market_product_categories").select("*").order("name"),

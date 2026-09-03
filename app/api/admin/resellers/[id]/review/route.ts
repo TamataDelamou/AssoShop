@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 const VALID = ["pending", "approved", "rejected"];
 
@@ -62,6 +62,8 @@ export async function POST(
         });
       }
     }
+
+    await logAudit(ctx, `review_reseller:${status}`, "market");
 
     const { data: list } = await supabase
       .from("market_reseller_applications")

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAdminContext();
@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
     }
 
     await supabase.from("admin_config").update(updates).eq("id", 1);
+
+    await logAudit(ctx, "update_config", "config");
 
     const { data: cfg } = await supabase
       .from("admin_config")

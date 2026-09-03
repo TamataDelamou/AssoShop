@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 export async function POST(
   request: NextRequest,
@@ -24,6 +24,8 @@ export async function POST(
       .update({ monthly_price })
       .eq("id", id);
     if (error) throw error;
+
+    await logAudit(ctx, `update_plan:${id}`, "config");
 
     const { data: list } = await supabase
       .from("admin_plans")

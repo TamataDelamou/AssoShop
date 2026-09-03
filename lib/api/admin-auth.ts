@@ -31,3 +31,23 @@ export async function getAdminContext(): Promise<AdminContext> {
 
   return { supabase, user: ctx.user };
 }
+
+// Écrit une entrée dans le journal d'audit admin (client service_role, hors RLS).
+export async function logAudit(
+  ctx: AdminContext,
+  action: string,
+  module: string,
+  severity: string = "info",
+): Promise<void> {
+  if ("response" in ctx) return;
+  const { supabase, user } = ctx;
+  const { error } = await supabase.from("admin_audit_logs").insert({
+    actor: user.email ?? user.id,
+    action,
+    module,
+    severity,
+  });
+  if (error) {
+    console.error(`[admin_audit] ${error.message}`);
+  }
+}

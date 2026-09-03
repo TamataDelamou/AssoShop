@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 const VALID = ["open", "in_progress", "resolved"];
 
@@ -24,6 +24,8 @@ export async function POST(
       .update({ status })
       .eq("id", id);
     if (error) throw error;
+
+    await logAudit(ctx, `set_dispute_status:${status}`, "disputes");
 
     const { data: list } = await supabase
       .from("admin_disputes")

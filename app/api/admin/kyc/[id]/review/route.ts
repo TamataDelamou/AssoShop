@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError } from "@/lib/api/auth";
-import { getAdminContext } from "@/lib/api/admin-auth";
+import { getAdminContext, logAudit } from "@/lib/api/admin-auth";
 
 const VALID = ["pending", "approved", "rejected"];
 
@@ -24,6 +24,8 @@ export async function POST(
       .update({ status })
       .eq("id", id);
     if (error) throw error;
+
+    await logAudit(ctx, `review_kyc:${status}`, "kyc");
 
     const { data: list } = await supabase
       .from("admin_kyc")
