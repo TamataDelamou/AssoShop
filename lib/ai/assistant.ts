@@ -1,9 +1,9 @@
 // Point d'entrée unique de l'assistant IA (GSG).
-// Les intents rédactionnels appellent le fournisseur IA (route /api/ai/assist,
-// clé côté serveur) puis retombent sur la synthèse locale déterministe en cas
-// d'indisponibilité. Les intents d'aide à la décision (risque, prêt,
-// rapprochement) restent déterministes par conception (RG-H03) : aucun montant
-// ni signal de risque n'est généré par un LLM.
+// Les intents appellent le fournisseur IA (route /api/ai/assist, clé côté
+// serveur) puis retombent sur la synthèse locale déterministe en cas
+// d'indisponibilité. Pour l'aide à la décision (risque, prêt, rapprochement),
+// la sortie JSON du LLM est validée (IDs existants, plages de montant) avant
+// d'être exposée — aucun montant ni signal de risque halluciné n'est conservé.
 
 const AI_ENDPOINT = "/api/ai/assist";
 
@@ -21,6 +21,12 @@ const SYSTEM_PROMPTS = {
   mobility:
     "Rédige une synthèse de mobilité de membre en français à partir des indicateurs fournis. Restitue uniquement des indicateurs agrégés d'engagement (score de confiance, nombre de cotisations, réunions suivies) sans aucun montant financier. Termine par la mention « Rapport généré automatiquement par l'assistant IA — indicateurs agrégés, sans détail financier brut. »",
   chat: "Tu es l'assistant IA d'AssoShop. Réponds en français de façon concise et utile aux questions sur les cotisations, prêts, tontines, marketplace et vie associative.",
+  risk:
+    "Tu es le moteur d'analyse de risque d'AssoShop. À partir de la liste de membres fournie (id, nom, niveau d'engagement, date de dernier versement), identifie les membres à risque d'irrégularité de paiement. Règles : engagement 'at_risk' ou 'irregular', ou dernier versement antérieur à 45 jours. Réponds UNIQUEMENT en JSON, sans texte autour, avec la forme exacte : {\"flagged\":[{\"id\":\"...\",\"name\":\"...\",\"reason\":\"...\"}]}. N'invente aucun membre absent de la liste ; si aucun risque, renvoie {\"flagged\":[]}.",
+  loan:
+    "Tu es le moteur de suggestion de prêt d'AssoShop. À partir des indicateurs fournis (épargne totale, niveau d'engagement, ancienneté en mois), estime un montant de prêt conservateur. Règles : facteur d'engagement (exemplary=0.5, reliable=0.4, irregular=0.2, autre=0.1), capacité = épargne × (0.3 + facteur) × (min(ancienneté, 12) / 12), arrondi au millier inférieur, jamais négatif, jamais supérieur à l'épargne totale. Réponds UNIQUEMENT en JSON, sans texte autour, avec la forme exacte : {\"suggested\": <nombre entier>}.",
+  reconciliation:
+    "Tu es l'assistant de rapprochement comptable d'AssoShop. Signale les écarts inhabituels mais n'exécute jamais d'action financière. Règles : ignorer les écritures 'matched' ; signaler l'absence de référence opérateur ; signaler les montants supérieurs à 1 000 000. Réponds UNIQUEMENT en JSON, sans texte autour, avec la forme exacte : {\"flags\":[{\"entry_id\":\"...\",\"note\":\"...\"}]}. N'invente aucune écriture absente de la liste ; si aucun écart, renvoie {\"flags\":[]}.",
 } as const;
 
 async function callAssistant(
@@ -40,6 +46,29 @@ async function callAssistant(
   } catch {
     return null;
   }
+}
+
+// Extraction tolérante d'une réponse JSON (directe, ou dans un bloc ```).
+function extractJson<T>(text: string): T | null {
+  const attempt = (candidate: string): T | null => {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = attempt(text);
+  if (direct !== null) return direct;
+
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) {
+    const fromFence = attempt(fence[1]);
+    if (fromFence !== null) return fromFence;
+  }
+
+  const block = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  return block ? attempt(block[0]) : null;
 }
 
 export interface MinutesSynthesis {
@@ -184,7 +213,7 @@ function detectAtRiskLocally(members: RiskCandidate[]): RiskAnalysis {
     }
   }
 
-  return { flagged, source: "ai" };
+  return { flagged, source: "fallback" };
 }
 
 export interface LoanSuggestionInput {
@@ -211,7 +240,7 @@ function suggestLoanLocally(input: LoanSuggestionInput): LoanSuggestion {
   const capacity =
     input.totalSaved * (0.3 + factor) * (Math.min(months, 12) / 12);
   const suggested = Math.max(0, Math.round(capacity / 1000) * 1000);
-  return { suggested, source: "ai" };
+  return { suggested, source: "fallback" };
 }
 
 export interface ProductDescriptionDraft {
@@ -282,7 +311,7 @@ function flagReconciliationDiscrepanciesLocally(
     }
   }
 
-  return { flags, source: "ai" };
+  return { flags, source: "fallback" };
 }
 
 export interface AssistantAnswer {
@@ -338,6 +367,65 @@ function synthesizeMobilityLocally(input: MobilitySynthesisInput): string {
   ].join("\n\n");
 }
 
+// Garde-fous : la sortie du LLM est validée avant d'être exposée. Les IDs
+// doivent exister dans l'entrée et les montants rester bornés, sinon on
+// retombe sur la règle déterministe.
+function toAtRiskMembers(
+  parsed: unknown,
+  members: RiskCandidate[],
+): AtRiskMember[] | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const flagged = (parsed as { flagged?: unknown }).flagged;
+  if (!Array.isArray(flagged)) return null;
+  const known = new Set(members.map((m) => m.id));
+  const result: AtRiskMember[] = [];
+  for (const item of flagged) {
+    if (!item || typeof item !== "object") return null;
+    const { id, name, reason } = item as Record<string, unknown>;
+    if (typeof id !== "string" || !known.has(id)) return null;
+    result.push({
+      id,
+      name: typeof name === "string" ? name : "Membre",
+      reason: typeof reason === "string" ? reason : "Risque détecté",
+    });
+  }
+  return result;
+}
+
+function toLoanSuggestion(
+  parsed: unknown,
+  input: LoanSuggestionInput,
+): number | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const suggested = (parsed as { suggested?: unknown }).suggested;
+  if (typeof suggested !== "number" || !Number.isFinite(suggested)) {
+    return null;
+  }
+  if (suggested < 0 || suggested > input.totalSaved) return null;
+  return Math.max(0, Math.round(suggested / 1000) * 1000);
+}
+
+function toReconciliationFlags(
+  parsed: unknown,
+  entries: ReconciliationCandidate[],
+): ReconciliationFlag[] | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const flags = (parsed as { flags?: unknown }).flags;
+  if (!Array.isArray(flags)) return null;
+  const known = new Set(entries.map((e) => e.id));
+  const result: ReconciliationFlag[] = [];
+  for (const item of flags) {
+    if (!item || typeof item !== "object") return null;
+    const { entry_id, note } = item as Record<string, unknown>;
+    if (typeof entry_id !== "string" || !known.has(entry_id)) return null;
+    result.push({
+      entry_id,
+      note: typeof note === "string" ? note : "Écart inhabituel",
+    });
+  }
+  return result;
+}
+
 export const aiAssistant = {
   async synthesizeMinutes(notes: string): Promise<MinutesSynthesis> {
     const text = await callAssistant(
@@ -377,17 +465,34 @@ export const aiAssistant = {
     return { draft: draftProjectDescriptionLocally(name), source: "fallback" };
   },
 
-  // Analyses déterministes (RG-H03) : aucun appel LLM pour les décisions de
-  // risque/crédit/rapprochement — la règle métier reste prévisible et testable.
+  // Aide à la décision (RG-H03) : le LLM SUGGÈRE, la sortie est validée
+  // (IDs existants, plages de montant) puis on retombe sur la règle
+  // déterministe si la réponse est invalide ou indisponible.
   async detectAtRiskMembers(
     members: RiskCandidate[],
   ): Promise<RiskAnalysis> {
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.risk,
+      JSON.stringify(members),
+    );
+    if (text) {
+      const flagged = toAtRiskMembers(extractJson<unknown>(text), members);
+      if (flagged) return { flagged, source: "ai" };
+    }
     return detectAtRiskLocally(members);
   },
 
   async suggestLoanAmount(
     input: LoanSuggestionInput,
   ): Promise<LoanSuggestion> {
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.loan,
+      JSON.stringify(input),
+    );
+    if (text) {
+      const suggested = toLoanSuggestion(extractJson<unknown>(text), input);
+      if (suggested !== null) return { suggested, source: "ai" };
+    }
     return suggestLoanLocally(input);
   },
 
@@ -407,6 +512,15 @@ export const aiAssistant = {
   async flagReconciliationDiscrepancies(
     entries: ReconciliationCandidate[],
   ): Promise<ReconciliationAnalysis> {
+    const unmatched = entries.filter((e) => e.status !== "matched");
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.reconciliation,
+      JSON.stringify(unmatched),
+    );
+    if (text) {
+      const flags = toReconciliationFlags(extractJson<unknown>(text), unmatched);
+      if (flags) return { flags, source: "ai" };
+    }
     return flagReconciliationDiscrepanciesLocally(entries);
   },
 
