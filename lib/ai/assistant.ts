@@ -1,7 +1,46 @@
 // Point d'entrée unique de l'assistant IA (GSG).
-// En développement : synthèse locale déterministe (stub).
-// À brancher sur le vrai fournisseur d'IA (Assistant IA Premium) sans
-// modifier les appels consommateurs.
+// Les intents rédactionnels appellent le fournisseur IA (route /api/ai/assist,
+// clé côté serveur) puis retombent sur la synthèse locale déterministe en cas
+// d'indisponibilité. Les intents d'aide à la décision (risque, prêt,
+// rapprochement) restent déterministes par conception (RG-H03) : aucun montant
+// ni signal de risque n'est généré par un LLM.
+
+const AI_ENDPOINT = "/api/ai/assist";
+
+const SYSTEM_PROMPTS = {
+  minutes:
+    "Tu es l'assistant de rédaction d'AssoShop. À partir des notes brutes d'une réunion associative, rédige un compte-rendu structuré en français avec trois sections : « Points abordés », « Décisions », « Actions à suivre » (listes à puces). Termine par « Document généré automatiquement par l'assistant IA — à relire et valider. » Ne rien inventer hors des notes.",
+  announcement:
+    "Rédige une annonce officielle et chaleureuse pour les membres d'une association, en français. Structure : formule d'ouverture, corps en puces à partir du sujet fourni, formule de clôture, puis « L'équipe de communication ».",
+  document:
+    "Rédige une description courte et formelle (1 à 2 phrases) d'un document officiel d'association, en français.",
+  project:
+    "Rédige une description (2 à 3 phrases) d'un projet communautaire associatif, en français, en mentionnant l'objectif de mobilisation des membres et des partenaires.",
+  product:
+    "Rédige une description commerciale courte et attrayante d'un produit de la marketplace AssoShop, en français, à partir du nom et des mots-clés fournis.",
+  mobility:
+    "Rédige une synthèse de mobilité de membre en français à partir des indicateurs fournis. Restitue uniquement des indicateurs agrégés d'engagement (score de confiance, nombre de cotisations, réunions suivies) sans aucun montant financier. Termine par la mention « Rapport généré automatiquement par l'assistant IA — indicateurs agrégés, sans détail financier brut. »",
+  chat: "Tu es l'assistant IA d'AssoShop. Réponds en français de façon concise et utile aux questions sur les cotisations, prêts, tontines, marketplace et vie associative.",
+} as const;
+
+async function callAssistant(
+  system: string,
+  user: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(AI_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ system, user }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = typeof data?.text === "string" ? data.text.trim() : "";
+    return text || null;
+  } catch {
+    return null;
+  }
+}
 
 export interface MinutesSynthesis {
   draft: string;
@@ -251,7 +290,7 @@ export interface AssistantAnswer {
   source: "ai" | "fallback";
 }
 
-// Synthèse locale déterministe en attendant le vrai fournisseur d'IA.
+// Synthèse locale déterministe en secours du fournisseur d'IA.
 function answerLocally(question: string): string {
   const q = question.toLowerCase();
 
@@ -300,46 +339,55 @@ function synthesizeMobilityLocally(input: MobilitySynthesisInput): string {
 }
 
 export const aiAssistant = {
-
   async synthesizeMinutes(notes: string): Promise<MinutesSynthesis> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { draft: synthesizeLocally(notes), source: "ai" };
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.minutes,
+      notes.trim() || "(aucune note)",
+    );
+    if (text) return { draft: text, source: "ai" };
+    return { draft: synthesizeLocally(notes), source: "fallback" };
   },
 
   async draftAnnouncement(prompt: string): Promise<AnnouncementDraft> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { draft: draftAnnouncementLocally(prompt), source: "ai" };
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.announcement,
+      prompt.trim() || "(aucun sujet)",
+    );
+    if (text) return { draft: text, source: "ai" };
+    return { draft: draftAnnouncementLocally(prompt), source: "fallback" };
   },
 
   async draftDocumentDescription(
     title: string,
   ): Promise<DocumentDescriptionDraft> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { draft: draftDocumentDescriptionLocally(title), source: "ai" };
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.document,
+      title.trim() || "(sans titre)",
+    );
+    if (text) return { draft: text, source: "ai" };
+    return { draft: draftDocumentDescriptionLocally(title), source: "fallback" };
   },
 
   async draftProjectDescription(name: string): Promise<ProjectDescriptionDraft> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { draft: draftProjectDescriptionLocally(name), source: "ai" };
+    const text = await callAssistant(
+      SYSTEM_PROMPTS.project,
+      name.trim() || "(sans nom)",
+    );
+    if (text) return { draft: text, source: "ai" };
+    return { draft: draftProjectDescriptionLocally(name), source: "fallback" };
   },
 
+  // Analyses déterministes (RG-H03) : aucun appel LLM pour les décisions de
+  // risque/crédit/rapprochement — la règle métier reste prévisible et testable.
   async detectAtRiskMembers(
     members: RiskCandidate[],
   ): Promise<RiskAnalysis> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
     return detectAtRiskLocally(members);
   },
 
   async suggestLoanAmount(
     input: LoanSuggestionInput,
   ): Promise<LoanSuggestion> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
     return suggestLoanLocally(input);
   },
 
@@ -347,30 +395,41 @@ export const aiAssistant = {
     name: string,
     keywords: string,
   ): Promise<ProductDescriptionDraft> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { draft: draftProductDescriptionLocally(name, keywords), source: "ai" };
+    const user = `Nom : ${name || "(sans nom)"}\nMots-clés : ${keywords || "(aucun)"}`;
+    const text = await callAssistant(SYSTEM_PROMPTS.product, user);
+    if (text) return { draft: text, source: "ai" };
+    return {
+      draft: draftProductDescriptionLocally(name, keywords),
+      source: "fallback",
+    };
   },
 
   async flagReconciliationDiscrepancies(
     entries: ReconciliationCandidate[],
   ): Promise<ReconciliationAnalysis> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
     return flagReconciliationDiscrepanciesLocally(entries);
   },
 
   async ask(question: string): Promise<AssistantAnswer> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { answer: answerLocally(question), source: "ai" };
+    const text = await callAssistant(SYSTEM_PROMPTS.chat, question.trim());
+    if (text) return { answer: text, source: "ai" };
+    return { answer: answerLocally(question), source: "fallback" };
   },
 
   async synthesizeMobilityReport(
     input: MobilitySynthesisInput,
   ): Promise<MobilitySynthesis> {
-    // Simule la latence d'un appel serveur.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return { summary: synthesizeMobilityLocally(input), source: "ai" };
+    const user = [
+      `Membre : ${input.memberName}`,
+      `Engagement : ${input.engagementLabel}`,
+      `Score de confiance : ${input.trustScore}/100`,
+      `Cotisations honorées : ${input.contributionsCount}`,
+      `Réunions suivies : ${input.meetingsAttended}`,
+      `Ancienne ville : ${input.oldCity}`,
+      `Nouvelle ville : ${input.newCity}`,
+    ].join("\n");
+    const text = await callAssistant(SYSTEM_PROMPTS.mobility, user);
+    if (text) return { summary: text, source: "ai" };
+    return { summary: synthesizeMobilityLocally(input), source: "fallback" };
   },
 };
