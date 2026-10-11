@@ -193,8 +193,6 @@ describe("Contrôle des variables de production", () => {
     NEXT_PUBLIC_SUPABASE_URL: "https://abcdefghijklmnop.supabase.co",
     NEXT_PUBLIC_SUPABASE_ANON_KEY: "a".repeat(40),
     SUPABASE_SERVICE_ROLE_KEY: "b".repeat(40),
-    NEXT_PUBLIC_BASE44_API_URL: "/api",
-    NEXT_PUBLIC_USE_REAL_API: "1",
     CRON_SECRET: "c".repeat(64),
   };
   type Result = { name: string; level: string; detail: string };
@@ -214,8 +212,7 @@ describe("Contrôle des variables de production", () => {
   it("refuse localhost, http, les valeurs d'exemple et un secret trop court", () => {
     expect(errors({ ...valid, NEXT_PUBLIC_SUPABASE_URL: "http://abc.supabase.co" })).toEqual(["NEXT_PUBLIC_SUPABASE_URL"]);
     expect(errors({ ...valid, NEXT_PUBLIC_SUPABASE_URL: "https://votre-projet.supabase.co" })).toEqual(["NEXT_PUBLIC_SUPABASE_URL"]);
-    expect(errors({ ...valid, NEXT_PUBLIC_BASE44_API_URL: "http://localhost:3000/api" })).toEqual(["NEXT_PUBLIC_BASE44_API_URL"]);
-    expect(errors({ ...valid, NEXT_PUBLIC_BASE44_API_URL: "https://app.assoshop.org/api" })).toEqual([]);
+    expect(errors({ ...valid, NEXT_PUBLIC_SUPABASE_URL: "https://localhost:54321" })).toEqual(["NEXT_PUBLIC_SUPABASE_URL"]);
     expect(errors({ ...valid, CRON_SECRET: "court" })).toEqual(["CRON_SECRET"]);
     expect(errors({ ...valid, SUPABASE_SERVICE_ROLE_KEY: valid.NEXT_PUBLIC_SUPABASE_ANON_KEY })).toEqual(["SUPABASE_SERVICE_ROLE_KEY"]);
     expect(errors({ ...valid, AI_API_KEY: "clé-ia" })).toEqual(["AI_API_KEY"]);
@@ -225,6 +222,17 @@ describe("Contrôle des variables de production", () => {
     expect(errors({ ...valid, PAY_REAL_MONEY: "1" })).toEqual(["PAY_REAL_MONEY"]);
     expect(errors({ ...valid, PAY_REAL_MONEY: "1" }, { allowRealMoney: true })).toEqual([]);
     expect(errors({ ...valid, PAY_REAL_MONEY: "0" })).toEqual([]);
+  });
+
+  it("refuse APP_ENV=test, qui lèverait le garde-fou argent réel", () => {
+    expect(errors({ ...valid, APP_ENV: "test" })).toEqual(["APP_ENV"]);
+    expect(errors({ ...valid, APP_ENV: "production" })).toEqual([]);
+  });
+
+  it("n'exige aucune variable d'hébergement web", () => {
+    const names = (runPreflight(valid) as Result[]).map((r) => r.name);
+    expect(names).not.toContain("NEXT_PUBLIC_BASE44_API_URL");
+    expect(names).not.toContain("NEXT_PUBLIC_USE_REAL_API");
   });
 
   it("exige les variables du Control Plane seulement s'il est activé", () => {
@@ -245,21 +253,6 @@ describe("Contrôle des variables de production", () => {
     );
     expect(output).not.toContain(secret);
     expect(output).not.toContain(valid.NEXT_PUBLIC_SUPABASE_URL);
-  });
-});
-
-describe("Planification (vercel.json)", () => {
-  it("appelle les deux routes planifiées toutes les 15 minutes", () => {
-    const config = JSON.parse(read("vercel.json")) as {
-      crons: { path: string; schedule: string }[];
-    };
-    expect(config.crons).toEqual([
-      { path: "/api/cron/investments/settle", schedule: "*/15 * * * *" },
-      { path: "/api/control-plane/push", schedule: "*/15 * * * *" },
-    ]);
-    // Les planificateurs n'émettent que des GET : les deux routes en exportent un.
-    expect(read("app/api/cron/investments/settle/route.ts")).toContain("export const GET = handle;");
-    expect(read("app/api/control-plane/push/route.ts")).toContain("export const GET = handle;");
   });
 });
 

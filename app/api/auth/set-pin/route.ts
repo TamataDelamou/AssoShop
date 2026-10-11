@@ -1,14 +1,13 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { hashPin } from "@/lib/pin";
-import { AUTH_CONFIG } from "@/utils/constants";
+import { pinResponse } from "@/lib/pin";
 
+// Création du PIN : fonction SQL pin_set (migration 0025, empreinte bcrypt
+// calculée en base). La même fonction est appelée directement par Flutter.
 export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
   if (!user) {
     return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
   }
@@ -18,36 +17,10 @@ export async function POST(request: Request) {
   } | null;
   const pin = typeof body?.pin === "string" ? body.pin : "";
 
-  if (pin.length !== AUTH_CONFIG.PIN_LENGTH || !/^\d+$/.test(pin)) {
-    return Response.json({ error: "INVALID_PIN" }, { status: 400 });
-  }
-
-  const { data: profile } = await supabase
-    .from("user_profiles")
-    .select("pin_locked_until")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (
-    profile?.pin_locked_until &&
-    new Date(profile.pin_locked_until) > new Date()
-  ) {
-    return Response.json({ error: "PIN_LOCKED" }, { status: 429 });
-  }
-
-  const { error } = await supabase.from("user_profiles").upsert(
-    {
-      user_id: user.id,
-      pin_hash: hashPin(pin),
-      pin_attempts: 0,
-      pin_locked_until: null,
-    },
-    { onConflict: "user_id" },
-  );
-
+  const { data, error } = await supabase.rpc("pin_set", { p_pin: pin });
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return Response.json({ error: "INTERNAL" }, { status: 500 });
   }
-
-  return Response.json({ ok: true });
+  const { status, body: payload } = pinResponse(data);
+  return Response.json(payload, { status });
 }

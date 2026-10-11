@@ -1,11 +1,13 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0024 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0026 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
 // marché payée et partagée, journal d'audit, puis stock, portefeuille
 // plateforme, transfert vers un destinataire réel, commandes groupées,
 // investissement payé (séquestre), annulation, avancement logistique et
 // candidature revendeur décidée par un administrateur de la plateforme, puis
 // dénouement des séquestres (remboursement, versement, bénéfices) et
-// fermeture de compte (suppression ou anonymisation). Les
+// fermeture de compte (suppression ou anonymisation), ainsi que les fonctions
+// appelées directement par l'application Flutter (PIN, profil, KYC,
+// back-office) avec la clé anon et le jeton de l'utilisateur. Les
 // données de test sont supprimées à la fin (sauf audit_events, en ajout seul
 // par conception).
 //
@@ -459,6 +461,87 @@ async function main() {
     r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: platformAdmin, body: { status: "rejected" } });
     check("une candidature approuvée ne se rejuge pas (409)", r.status === 409, `statut ${r.status}`);
 
+    console.log("\n9 bis. Appels directs de l'application Flutter (clé anon + jeton utilisateur)");
+    // 9 bis.a Code PIN : par les routes de référence, puis directement en base.
+    r = await api("/api/auth/check-pin", { user: candidate });
+    check("PIN : aucun PIN au départ", r.status === 200 && r.json?.hasPin === false, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    r = await api("/api/auth/set-pin", { method: "POST", user: candidate, body: { pin: "12" } });
+    check("PIN : format invalide refusé (400)", r.status === 400, `statut ${r.status}`);
+    r = await api("/api/auth/set-pin", { method: "POST", user: candidate, body: { pin: "1234" } });
+    check("PIN : créé par la route", r.status === 200 && r.json?.ok === true, `statut ${r.status}`);
+    let pinRpc = await candidate.client.rpc("pin_verify", { p_pin: "1234" });
+    check("PIN : le même PIN est vérifié directement en base (appel Flutter)", pinRpc.data?.ok === true, JSON.stringify(pinRpc.data ?? pinRpc.error));
+    r = await api("/api/auth/verify-pin", { method: "POST", user: candidate, body: { pin: "0000" } });
+    check("PIN : mauvais PIN refusé (401) avec les essais restants", r.status === 401 && r.json?.attempts_left === 4, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    const pinHash = await candidate.client.from("user_profiles").select("pin_hash").eq("user_id", candidate.id);
+    check("PIN : empreinte non lisible avec la clé anon", Boolean(pinHash.error), "lisible !");
+    const pinReset = await candidate.client.from("user_profiles").update({ pin_attempts: 0 }).eq("user_id", candidate.id).select("user_id");
+    check("PIN : compteur de tentatives non modifiable directement", Boolean(pinReset.error), "accepté !");
+    for (let i = 0; i < 4; i++) pinRpc = await candidate.client.rpc("pin_verify", { p_pin: "0000" });
+    check("PIN : verrouillé au cinquième échec", pinRpc.data?.ok === false && pinRpc.data?.reason === "locked", JSON.stringify(pinRpc.data ?? pinRpc.error));
+    r = await api("/api/auth/verify-pin", { method: "POST", user: candidate, body: { pin: "1234" } });
+    check("PIN : bon PIN refusé pendant le verrouillage (429)", r.status === 429, `statut ${r.status}`);
+
+    // 9 bis.b Profil et KYC.
+    const forgedKycStatus = await candidate.client.from("user_profiles").update({ kyc_status: "verified" }).eq("user_id", candidate.id).select("user_id");
+    check("profil : statut KYC non modifiable directement", Boolean(forgedKycStatus.error), "accepté !");
+    const profileRpc = await candidate.client.rpc("profile_update", { p_city: "Kindia" });
+    check("profil : ville modifiée par la fonction, sans empreinte de PIN dans la réponse", profileRpc.data?.city === "Kindia" && !("pin_hash" in (profileRpc.data ?? {})), JSON.stringify(profileRpc.data ?? profileRpc.error));
+    r = await api("/api/hub/kyc/submit", { method: "POST", user: candidate, body: { document_type: "Carte nationale" } });
+    const kycId = r.json?.id ?? null;
+    check("KYC : demande déposée en attente", r.status === 200 && r.json?.status === "pending" && kycId, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    const forgedKyc = await candidate.client.from("hub_kyc").update({ status: "approved" }).eq("id", kycId).select("id");
+    check("KYC : l'utilisateur ne peut pas approuver sa demande", Boolean(forgedKyc.error) || (forgedKyc.data ?? []).length === 0, "accepté !");
+    const { data: adminKycRow } = await admin.from("admin_kyc").select("id, status").eq("user_id", candidate.id).maybeSingle();
+    created.kycIds = adminKycRow?.id ? [adminKycRow.id] : [];
+    check("KYC : demande visible du back-office", adminKycRow?.status === "pending", JSON.stringify(adminKycRow));
+
+    // 9 bis.c Back-office : mêmes fonctions que le mode administrateur de Flutter desktop.
+    const whoAdmin = await platformAdmin.client.rpc("is_platform_admin");
+    const whoUser = await candidate.client.rpc("is_platform_admin");
+    check("mode administrateur : reconnu pour l'administrateur seulement", whoAdmin.data === true && whoUser.data === false, `${whoAdmin.data} / ${whoUser.data}`);
+    const forbidden = [];
+    for (const [name, args] of [
+      ["admin_review_kyc", { p_kyc_id: adminKycRow?.id, p_status: "approved" }],
+      ["admin_set_commission", { p_service: "Commission revendeur B2B", p_rate: 0 }],
+      ["admin_update_config", { p_maintenance_mode: true }],
+      ["admin_set_user_suspended", { p_user_id: buyer.id, p_suspended: true }],
+      ["admin_users", {}],
+      ["admin_overview", {}],
+      ["admin_funds_summary", {}],
+      ["admin_anonymized_accounts", {}],
+      ["admin_investment_supervision", {}],
+      ["admin_supervision", {}],
+    ]) {
+      const res = await candidate.client.rpc(name, args);
+      if (res.error?.code !== "PY006") forbidden.push(`${name} (${res.error?.code ?? "acceptée"})`);
+    }
+    check("fonctions du back-office refusées à un non-administrateur (PY006)", forbidden.length === 0, forbidden.join(", "));
+    const kycSeenByUser = await candidate.client.from("admin_kyc").select("id");
+    const kycSeenByAdmin = await platformAdmin.client.from("admin_kyc").select("id").eq("id", adminKycRow?.id);
+    check("demandes KYC lisibles par l'administrateur seulement", (kycSeenByUser.data ?? []).length === 0 && (kycSeenByAdmin.data ?? []).length === 1);
+    const ratesSeenByUser = await candidate.client.from("admin_commissions").select("service, rate");
+    check("taux de commission lisibles par tout utilisateur connecté", (ratesSeenByUser.data ?? []).length >= 4, `${(ratesSeenByUser.data ?? []).length} taux`);
+    const forgedRate = await platformAdmin.client.from("admin_commissions").update({ rate: 0 }).eq("service", "Commission revendeur B2B").select("service");
+    check("taux de commission non modifiable par écriture directe, même par un administrateur", Boolean(forgedRate.error) || (forgedRate.data ?? []).length === 0, "accepté !");
+    const apiKeys = await platformAdmin.client.from("admin_integrations").select("api_key");
+    check("clé d'API des intégrations jamais lisible", Boolean(apiKeys.error), "lisible !");
+
+    const kycDecision = await platformAdmin.client.rpc("admin_review_kyc", { p_kyc_id: adminKycRow?.id, p_status: "approved" });
+    const { data: kycProfile } = await candidate.client.from("user_profiles").select("kyc_status").eq("user_id", candidate.id).maybeSingle();
+    check("KYC approuvé par l'administrateur : profil « verified »", kycDecision.data?.status === "approved" && kycProfile?.kyc_status === "verified", JSON.stringify(kycDecision.data ?? kycDecision.error));
+    const overviewRpc = await platformAdmin.client.rpc("admin_overview");
+    const fundsRpc = await platformAdmin.client.rpc("admin_funds_summary");
+    check(
+      "tableau de bord et rapprochement des fonds lisibles par l'administrateur",
+      Number(overviewRpc.data?.users_total) >= 5 &&
+        Number(fundsRpc.data?.user_wallets_total) + Number(fundsRpc.data?.escrow_total) + Number(fundsRpc.data?.platform_wallet_balance) === Number(fundsRpc.data?.funds_total),
+      JSON.stringify(fundsRpc.data ?? fundsRpc.error),
+    );
+    const orgRpc = await candidate.client.rpc("org_create", { p_name: `Organisation RPC E2E ${RUN}`, p_type: "association" });
+    created.extraOrgIds = orgRpc.data?.id ? [orgRpc.data.id] : [];
+    check("organisation créée en une opération par la fonction", orgRpc.data?.status === "pending" && orgRpc.data?.created_by === candidate.id, JSON.stringify(orgRpc.data ?? orgRpc.error));
+
     console.log("\n10. Séquestre des investissements : dénouement tout ou rien");
     const cron = { Authorization: `Bearer ${CRON_SECRET}` };
     const settle = () => api("/api/cron/investments/settle", { method: "POST", headers: cron });
@@ -745,6 +828,17 @@ async function main() {
     );
   } finally {
     console.log("\n13. Suppression des données de test");
+    for (const id of created.kycIds ?? []) {
+      const action = `review_kyc:approved:${id}`;
+      await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);
+      await admin.from("admin_audit_logs").delete().eq("action", action);
+      const { error } = await admin.from("admin_kyc").delete().eq("id", id);
+      console.log(`  demande KYC de test : ${error ? `ÉCHEC ${error.message}` : "supprimée"}`);
+    }
+    for (const id of created.extraOrgIds ?? []) {
+      const { error } = await admin.from("organizations").delete().eq("id", id);
+      console.log(`  organisation créée par fonction : ${error ? `ÉCHEC ${error.message}` : "supprimée"}`);
+    }
     for (const id of created.users) {
       const action = `account_anonymized:${id}`;
       await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);

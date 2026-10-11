@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase, user } = ctx;
+  const { supabase } = ctx;
 
   const { document_type } = (await request.json().catch(() => ({}))) as {
     document_type?: string;
@@ -15,22 +16,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Type de document requis" }, { status: 400 });
     }
 
-    const { data, error } = await supabase
-      .from("hub_kyc")
-      .insert({
-        user_id: user.id,
-        document_type,
-        status: "pending",
-      })
-      .select()
-      .single();
-    if (error) throw error;
+    // Demande toujours « pending », visible du back-office : fonction SQL
+    // kyc_submit (0025). L'utilisateur n'écrit plus hub_kyc ni son statut KYC.
+    const { data, error } = await supabase.rpc("kyc_submit", {
+      p_document_type: document_type,
+    });
+    if (error) return payRpcErrorResponse(error);
 
-    await supabase
-      .from("user_profiles")
-      .upsert({ user_id: user.id, kyc_status: "pending" }, { onConflict: "user_id" });
-
-    return NextResponse.json(data);
+    return NextResponse.json(rpcRow(data));
   } catch (err) {
     return apiError(err);
   }

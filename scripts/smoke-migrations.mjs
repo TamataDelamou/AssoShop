@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0024, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0026, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -1331,6 +1331,338 @@ export async function runSmokeTests(client) {
       (await escrowBalance(client, escrowProject.id)) === 0,
     `${JSON.stringify(anonymizedRun)}, solde ${await balanceOf(client, outsider)}`,
   );
+
+  // ---- 14. Backend appelable par Flutter : PIN, profil, KYC (0025) ----
+  const rpc = async (userId, sql, params = []) =>
+    (await as(client, "authenticated", userId, () => one(client, `select ${sql} as r`, params))).r;
+  const denied = (userId, sql, params = []) =>
+    expectError(client, () => as(client, "authenticated", userId, () => client.query(sql, params)));
+  const profileOf = (userId) =>
+    one(client, "select pin_hash, pin_attempts, pin_locked_until, kyc_status, city, language from public.user_profiles where user_id = $1", [userId]);
+
+  check("PIN : aucun PIN au départ", (await rpc(candidate, "public.pin_status()")).has_pin === false);
+  let pin = await rpc(candidate, "public.pin_set('12')");
+  check("PIN : format invalide refusé sans erreur", pin.ok === false && pin.reason === "invalid_format", JSON.stringify(pin));
+  pin = await rpc(candidate, "public.pin_set('1234')");
+  const storedPin = await profileOf(candidate);
+  check(
+    "PIN : créé, empreinte bcrypt en base (jamais le PIN en clair)",
+    pin.ok === true && /^\$2[aby]\$/.test(storedPin.pin_hash ?? "") && !String(storedPin.pin_hash).includes("1234"),
+    JSON.stringify(pin),
+  );
+  check("PIN : état « défini »", (await rpc(candidate, "public.pin_status()")).has_pin === true);
+
+  err = await denied(candidate, "select pin_hash from public.user_profiles where user_id = $1", [candidate]);
+  check("l'empreinte du PIN n'est pas lisible par son propriétaire", err?.code === "42501", err ? err.code : "lisible !");
+  const ownProfile = await as(client, "authenticated", candidate, () =>
+    one(client, "select count(*)::int as n from public.user_profiles where kyc_status is not null"),
+  );
+  check("un utilisateur ne lit que son propre profil", ownProfile.n === 1, `${ownProfile.n} ligne(s)`);
+  for (const [label, sql] of [
+    ["remettre à zéro son compteur de tentatives", "update public.user_profiles set pin_attempts = 0, pin_locked_until = null where user_id = $1"],
+    ["s'attribuer un statut KYC vérifié", "update public.user_profiles set kyc_status = 'verified' where user_id = $1"],
+    ["écrire son empreinte de PIN", "update public.user_profiles set pin_hash = 'x' where user_id = $1"],
+    ["insérer son profil directement", "insert into public.user_profiles (user_id, kyc_status) values ($1, 'verified')"],
+  ]) {
+    err = await denied(candidate, sql, [candidate]);
+    check(`écriture directe refusée : ${label}`, err?.code === "42501", err ? `${err.code} ${err.message}` : "acceptée !");
+  }
+
+  pin = await rpc(candidate, "public.pin_verify('1234')");
+  check("PIN : bon PIN accepté", pin.ok === true, JSON.stringify(pin));
+  const attemptsLeft = [];
+  for (let i = 0; i < 4; i++) {
+    pin = await rpc(candidate, "public.pin_verify('0000')");
+    attemptsLeft.push(pin.reason === "incorrect" ? pin.attempts_left : pin.reason);
+  }
+  check("PIN : quatre échecs décomptés (4, 3, 2, 1 essais restants)", attemptsLeft.join(",") === "4,3,2,1", attemptsLeft.join(","));
+  check("PIN : le compteur est tenu en base", (await profileOf(candidate)).pin_attempts === 4);
+  pin = await rpc(candidate, "public.pin_verify('0000')");
+  check("PIN : verrouillé au cinquième échec", pin.ok === false && pin.reason === "locked" && Boolean(pin.locked_until), JSON.stringify(pin));
+  pin = await rpc(candidate, "public.pin_verify('1234')");
+  check("PIN : bon PIN refusé pendant le verrouillage", pin.ok === false && pin.reason === "locked", JSON.stringify(pin));
+  pin = await rpc(candidate, "public.pin_set('5678')");
+  check("PIN : changement refusé pendant le verrouillage", pin.ok === false && pin.reason === "locked", JSON.stringify(pin));
+  check("PIN : état « verrouillé »", (await rpc(candidate, "public.pin_status()")).locked === true);
+  await client.query("update public.user_profiles set pin_locked_until = now() - interval '1 minute' where user_id = $1", [candidate]);
+  pin = await rpc(candidate, "public.pin_verify('1234')");
+  check("PIN : accepté de nouveau une fois le verrou expiré", pin.ok === true && (await profileOf(candidate)).pin_attempts === 0, JSON.stringify(pin));
+
+  // Ancien PIN (empreinte scrypt du serveur Next.js) : vaut absence de PIN.
+  await client.query("update public.user_profiles set pin_hash = '0a1b2c:9f8e7d' where user_id = $1", [candidate]);
+  pin = await rpc(candidate, "public.pin_verify('1234')");
+  check("PIN : une ancienne empreinte non convertible demande un nouveau PIN", pin.ok === false && pin.reason === "no_pin", JSON.stringify(pin));
+  pin = await rpc(candidate, "public.pin_set('4321')");
+  check("PIN : nouveau PIN après une ancienne empreinte", pin.ok === true && (await rpc(candidate, "public.pin_verify('4321')")).ok === true);
+
+  const updatedProfile = await rpc(candidate, "public.profile_update('Kindia', null)");
+  check(
+    "profil : ville modifiée, empreinte du PIN absente de la réponse",
+    updatedProfile.city === "Kindia" && !("pin_hash" in updatedProfile) && (await profileOf(candidate)).city === "Kindia",
+    JSON.stringify(updatedProfile),
+  );
+
+  const kyc = await as(client, "authenticated", candidate, () => one(client, "select * from public.kyc_submit('Carte nationale')"));
+  const adminKyc = await one(client, "select id, status, user_id from public.admin_kyc where user_id = $1", [candidate]);
+  check(
+    "KYC : demande déposée en attente, visible du back-office",
+    kyc.status === "pending" && adminKyc?.status === "pending" && (await profileOf(candidate)).kyc_status === "pending",
+    JSON.stringify(kyc),
+  );
+  err = await denied(candidate, "select public.kyc_submit('Passeport')");
+  check("KYC : une seule demande en attente", err?.code === "PY019", err ? err.code : "acceptée !");
+  err = await denied(candidate, "update public.hub_kyc set status = 'approved' where user_id = $1", [candidate]);
+  check("KYC : l'utilisateur ne peut pas approuver sa demande", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+  err = await denied(candidate, "insert into public.hub_kyc (user_id, document_type, status) values ($1, 'x', 'approved')", [candidate]);
+  check("KYC : insertion directe d'une demande approuvée refusée", err?.code === "42501", err ? `${err.code} ${err.message}` : "acceptée !");
+
+  const createdOrg = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.org_create('Organisation RPC (test)', 'association', 'Conakry')"),
+  );
+  const orgMembership = await one(client, "select role from public.memberships where organization_id = $1 and user_id = $2", [createdOrg.id, candidate]);
+  check(
+    "organisation créée avec son créateur administrateur, en une opération",
+    createdOrg.status === "pending" && createdOrg.created_by === candidate && orgMembership?.role === "admin",
+    JSON.stringify({ status: createdOrg.status, role: orgMembership?.role }),
+  );
+  err = await denied(candidate, "select public.org_create('', 'association')");
+  check("organisation sans nom refusée", err?.code === "PY009", err ? err.code : "acceptée !");
+
+  // ---- 15. Back-office en base (0025) ----
+  check(
+    "is_platform_admin : vrai pour un administrateur, faux sinon",
+    (await rpc(platformAdmin, "public.is_platform_admin()")) === true && (await rpc(candidate, "public.is_platform_admin()")) === false,
+  );
+
+  const anyUuid = "00000000-0000-4000-8000-000000000000";
+  const adminCalls = [
+    ["admin_review_kyc", "select public.admin_review_kyc($1, 'approved')", [adminKyc.id]],
+    ["admin_set_dispute_status", "select public.admin_set_dispute_status($1, 'resolved')", [anyUuid]],
+    ["admin_review_moderation", "select public.admin_review_moderation($1, 'approved')", [anyUuid]],
+    ["admin_set_commission", "select public.admin_set_commission('Commission revendeur B2B', 0)", []],
+    ["admin_update_config", "select public.admin_update_config(p_maintenance_mode := true)", []],
+    ["admin_update_plan", "select public.admin_update_plan($1, 1)", [anyUuid]],
+    ["admin_toggle_status", "select public.admin_toggle_status('country', $1)", [anyUuid]],
+    ["admin_create_category", "select public.admin_create_category('Piratée')", []],
+    ["admin_set_user_suspended", "select public.admin_set_user_suspended($1, true)", [seller]],
+    ["admin_users", "select public.admin_users()", []],
+    ["admin_anonymized_accounts", "select public.admin_anonymized_accounts()", []],
+    ["admin_overview", "select public.admin_overview()", []],
+    ["admin_funds_summary", "select public.admin_funds_summary()", []],
+    ["admin_investment_supervision", "select public.admin_investment_supervision()", []],
+    ["admin_supervision", "select public.admin_supervision()", []],
+  ];
+  const notRefused = [];
+  for (const [name, sql, params] of adminCalls) {
+    err = await denied(candidate, sql, params);
+    if (err?.code !== "PY006") notRefused.push(`${name} (${err ? err.code : "acceptée"})`);
+  }
+  check(`les ${adminCalls.length} fonctions du back-office refusent un non-administrateur`, notRefused.length === 0, notRefused.join(", "));
+  const rateUnchanged = await one(client, "select rate from public.admin_commissions where service = 'Commission revendeur B2B'");
+  check("aucun effet de ces tentatives (taux de commission inchangé)", Number(rateUnchanged.rate) === rate, `taux ${rateUnchanged.rate}`);
+  for (const internal of ["select public.admin_require()", "select public.admin_log('x', 'y')"]) {
+    err = await denied(platformAdmin, internal);
+    check(`fonction interne non appelable : ${internal.slice(14)}`, err?.code === "42501", err ? err.code : "acceptée !");
+  }
+
+  const countAs = async (userId, table) =>
+    (await as(client, "authenticated", userId, () => one(client, `select count(*)::int as n from public.${table}`))).n;
+  check(
+    "demandes KYC et journal du back-office : lisibles par l'administrateur seulement",
+    (await countAs(platformAdmin, "admin_kyc")) >= 1 && (await countAs(candidate, "admin_kyc")) === 0 &&
+      (await countAs(platformAdmin, "admin_audit_logs")) >= 1 && (await countAs(candidate, "admin_audit_logs")) === 0 &&
+      (await countAs(platformAdmin, "platform_admins")) >= 1 && (await countAs(candidate, "platform_admins")) === 0,
+  );
+  check(
+    "candidatures revendeur : l'administrateur les voit toutes, un utilisateur seulement la sienne",
+    (await countAs(platformAdmin, "market_reseller_applications")) >= 2 && (await countAs(candidate, "market_reseller_applications")) === 1,
+    `admin ${await countAs(platformAdmin, "market_reseller_applications")}, candidat ${await countAs(candidate, "market_reseller_applications")}`,
+  );
+  check(
+    "taux de commission, formules, pays et opérateurs lisibles par tout utilisateur connecté",
+    (await countAs(candidate, "admin_commissions")) >= 4 && (await countAs(candidate, "admin_plans")) >= 1 &&
+      (await countAs(candidate, "admin_countries")) >= 1 && (await countAs(candidate, "admin_operators")) >= 1 &&
+      (await countAs(candidate, "admin_config")) === 1,
+  );
+  err = await denied(candidate, "update public.admin_commissions set rate = 0");
+  check("écriture directe d'un taux de commission refusée", err?.code === "42501", err ? err.code : "acceptée !");
+  err = await denied(platformAdmin, "update public.admin_commissions set rate = 0");
+  check("même un administrateur n'écrit pas directement (fonctions journalisées uniquement)", err?.code === "42501", err ? err.code : "acceptée !");
+  err = await denied(platformAdmin, "select api_key from public.admin_integrations");
+  const integrationNames = await countAs(platformAdmin, "admin_integrations");
+  check("clé d'API des intégrations jamais lisible, même par un administrateur", err?.code === "42501" && integrationNames >= 1, err ? err.code : "lisible !");
+  err = await denied(platformAdmin, "select count(*) from public.control_plane_outbox");
+  check("file d'envoi du Control Plane non lisible par un client", err?.code === "42501", err ? err.code : "lisible !");
+
+  const reviewedKyc = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_review_kyc($1, 'approved')", [adminKyc.id]),
+  );
+  const hubKycAfter = await one(client, "select status, reviewed_at from public.hub_kyc where id = $1", [kyc.id]);
+  check(
+    "KYC approuvé par un administrateur : demande et profil mis à jour",
+    reviewedKyc.status === "approved" && hubKycAfter.status === "approved" && hubKycAfter.reviewed_at !== null &&
+      (await profileOf(candidate)).kyc_status === "verified",
+    JSON.stringify({ admin: reviewedKyc.status, hub: hubKycAfter.status }),
+  );
+  err = await denied(platformAdmin, "select public.admin_review_kyc($1, 'rejected')", [adminKyc.id]);
+  check("KYC : une demande traitée ne se rejuge pas", err?.code === "PY019", err ? err.code : "acceptée !");
+
+  const commissionSet = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_set_commission('Commission de test', 2.5)"),
+  );
+  const commissionLog = await one(client, "select severity from public.admin_audit_logs where action like 'update_commission:Commission de test:%->2.5'");
+  check("commission créée par la fonction, journalisée en « warning »", Number(commissionSet.rate) === 2.5 && commissionLog?.severity === "warning", JSON.stringify(commissionSet));
+  err = await denied(platformAdmin, "select public.admin_set_commission('Commission de test', 150)");
+  check("taux de commission hors bornes refusé", err?.code === "PY009", err ? err.code : "accepté !");
+
+  const configBefore = await one(client, "select platform_name, maintenance_mode from public.admin_config where id = 1");
+  const configAfter = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_update_config(p_maintenance_mode := true)"),
+  );
+  check(
+    "configuration : seul le champ fourni change",
+    configAfter.maintenance_mode === true && configAfter.platform_name === configBefore.platform_name,
+    JSON.stringify(configAfter),
+  );
+
+  const plan = await one(client, "select id from public.admin_plans order by monthly_price limit 1");
+  const planAfter = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_update_plan($1, 12345)", [plan.id]),
+  );
+  check("formule : prix modifié", Number(planAfter.monthly_price) === 12345);
+
+  const country = await one(client, "select id, status from public.admin_countries order by name limit 1");
+  const toggled = await rpc(platformAdmin, "public.admin_toggle_status('country', $1)", [country.id]);
+  check("pays activé / désactivé", toggled === (country.status === "active" ? "inactive" : "active"), `${country.status} -> ${toggled}`);
+  err = await denied(platformAdmin, "select public.admin_toggle_status('autre', $1)", [country.id]);
+  check("bascule d'un élément inconnu refusée", err?.code === "PY009", err ? err.code : "acceptée !");
+
+  const category = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_create_category('Catégorie de test')"),
+  );
+  check("catégorie créée avec un identifiant technique", category.name === "Catégorie de test" && /^cat-gorie-de-test-[0-9a-f]{8}$/.test(category.slug), category.slug);
+
+  const dispute = await one(client, "insert into public.admin_disputes (type, claimant, respondent, description, status) values ('commande', 'A', 'B', 'Litige de test', 'open') returning id");
+  const disputeAfter = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_set_dispute_status($1, 'resolved')", [dispute.id]),
+  );
+  const moderationItem = await one(client, "insert into public.admin_moderation (type, title, author, reason, status) values ('annonce', 'Titre', 'Auteur', 'Signalement de test', 'pending') returning id");
+  const moderationAfter = await as(client, "authenticated", platformAdmin, () =>
+    one(client, "select * from public.admin_review_moderation($1, 'rejected')", [moderationItem.id]),
+  );
+  check("litige et signalement traités par leurs fonctions", disputeAfter.status === "resolved" && moderationAfter.status === "rejected");
+  err = await denied(platformAdmin, "select public.admin_set_dispute_status($1, 'inconnu')", [dispute.id]);
+  check("statut de litige inconnu refusé", err?.code === "PY009", err ? err.code : "accepté !");
+
+  const suspended = await rpc(platformAdmin, "public.admin_set_user_suspended($1, true)", [candidate]);
+  const bannedRow = await one(client, "select banned_until from auth.users where id = $1", [candidate]);
+  check("compte suspendu par un administrateur", suspended.status === "suspended" && bannedRow.banned_until !== null);
+  const restored = await rpc(platformAdmin, "public.admin_set_user_suspended($1, false)", [candidate]);
+  const restoredRow = await one(client, "select banned_until from auth.users where id = $1", [candidate]);
+  check("compte rétabli", restored.status === "active" && restoredRow.banned_until === null);
+  err = await denied(platformAdmin, "select public.admin_set_user_suspended($1, true)", [platformAdmin]);
+  check("un administrateur ne se suspend pas lui-même", err?.code === "PY006", err ? err.code : "accepté !");
+  err = await denied(platformAdmin, "select public.admin_set_user_suspended($1, false)", [outsider]);
+  check("un compte anonymisé ne se rétablit pas", err?.code === "PY019", err ? err.code : "accepté !");
+
+  const usersPage = await rpc(platformAdmin, "public.admin_users('smoke-', 100, 0)");
+  const anonymizedPage = await rpc(platformAdmin, "public.admin_users('anonyme-', 100, 0)");
+  check(
+    "liste des comptes : recherche, statut et aucune donnée d'authentification",
+    usersPage.total >= 4 && usersPage.users.some((u) => u.id === platformAdmin && u.is_admin === true) &&
+      anonymizedPage.users.some((u) => u.id === outsider && u.status === "anonymized") &&
+      usersPage.users.every((u) => !("encrypted_password" in u) && !("pin_hash" in u)),
+    `${usersPage.total} compte(s)`,
+  );
+
+  const anonymizedAccounts = await rpc(platformAdmin, "public.admin_anonymized_accounts()");
+  const anonymizedOutsider = anonymizedAccounts.find((a) => a.user_id === outsider);
+  check(
+    "comptes anonymisés : solde restant à restituer visible",
+    Number(anonymizedOutsider?.wallet_balance) === (await balanceOf(client, outsider)) && Number(anonymizedOutsider?.wallet_balance) > 0,
+    JSON.stringify(anonymizedOutsider),
+  );
+
+  const funds = await rpc(platformAdmin, "public.admin_funds_summary()");
+  check(
+    "rapprochement : portefeuilles + séquestres + plateforme = total des fonds",
+    Number(funds.user_wallets_total) + Number(funds.escrow_total) + Number(funds.platform_wallet_balance) === Number(funds.funds_total) &&
+      Number(funds.platform_wallet_balance) === (await platformBalance(client)) && Number(funds.negative_wallets) === 0 &&
+      Number(funds.anonymized_wallets_total) >= Number(anonymizedOutsider?.wallet_balance),
+    JSON.stringify(funds),
+  );
+  const overview = await rpc(platformAdmin, "public.admin_overview()");
+  check(
+    "tableau de bord : compteurs et validations en attente",
+    Number(overview.users_total) >= 5 && Number(overview.anonymized_accounts) >= 1 && Number.isInteger(Number(overview.pending_kyc)) && overview.currency === "GNF",
+    JSON.stringify(overview),
+  );
+  const supervisionInvest = await rpc(platformAdmin, "public.admin_investment_supervision()");
+  const supervisedFunded = supervisionInvest.projects.find((p) => p.id === funded.id);
+  check(
+    "supervision des investissements : porteur, séquestre, investisseurs, bénéfices",
+    supervisedFunded?.status === "funded" && Number(supervisedFunded?.investors_count) === 2 &&
+      supervisedFunded?.promoter_id === seller && supervisionInvest.distributions.length >= 2,
+    JSON.stringify(supervisedFunded),
+  );
+  const supervision = await rpc(platformAdmin, "public.admin_supervision()");
+  check(
+    "supervision : toutes les associations, y compris celles dont l'administrateur n'est pas membre",
+    supervision.organizations.some((o) => o.id === orgId) && supervision.organizations.some((o) => o.id === createdOrg.id),
+    `${supervision.organizations.length} association(s)`,
+  );
+
+  // Fermeture de compte par l'utilisateur lui-même.
+  const selfDeleted = await createUser(client, "depart");
+  const closedSelf = await rpc(selfDeleted, "public.account_close_self()");
+  const selfLeft = await one(client, "select count(*)::int as n from auth.users where id = $1", [selfDeleted]);
+  check("fermeture par l'utilisateur : compte sans engagement supprimé", closedSelf.action === "deleted" && selfLeft.n === 0, JSON.stringify(closedSelf));
+  const buyerBalanceBeforeClose = await balanceOf(client, buyer);
+  const closedBuyer = await rpc(buyer, "public.account_close_self()");
+  const buyerAuth = await one(client, "select email, banned_until from auth.users where id = $1", [buyer]);
+  check(
+    "fermeture par l'utilisateur : compte engagé anonymisé, solde conservé",
+    closedBuyer.action === "anonymized" && closedBuyer.reasons.includes("wallet_balance") &&
+      buyerAuth.email === `anonyme-${buyer}@anonymise.invalid` && buyerAuth.banned_until !== null &&
+      (await balanceOf(client, buyer)) === buyerBalanceBeforeClose,
+    JSON.stringify(closedBuyer),
+  );
+  err = await denied(seller, "select public.account_close($1)", [candidate]);
+  check("un utilisateur ne peut fermer que son propre compte", err?.code === "42501", err ? err.code : "accepté !");
+
+  // ---- 16. Tâches planifiées en base (0026) ----
+  const jobs = (await client.query("select jobname, schedule, command from cron.job where jobname like 'assoshop-%' order by jobname")).rows;
+  check(
+    "deux tâches pg_cron toutes les 15 minutes (envoi au Kernel, dénouement des séquestres)",
+    jobs.length === 2 && jobs.every((j) => j.schedule === "*/15 * * * *") &&
+      jobs[0].jobname === "assoshop-control-plane-push" && jobs[0].command.includes("cp_trigger_push") &&
+      jobs[1].jobname === "assoshop-investments-settle" && jobs[1].command.includes("market_settle_due_investments_job"),
+    JSON.stringify(jobs),
+  );
+  for (const fn of ["market_settle_due_investments_job()", "cp_trigger_push()"]) {
+    err = await denied(platformAdmin, `select public.${fn}`);
+    check(`tâche planifiée non appelable par un client : ${fn}`, err?.code === "42501", err ? err.code : "acceptée !");
+  }
+  const pushTrigger = (await one(client, "select public.cp_trigger_push() as r")).r;
+  check("envoi au Kernel : sans secret dans Vault, la tâche ne fait rien", ["skipped", "requested"].includes(pushTrigger), pushTrigger);
+
+  // Séquestre rendu incohérent : la tâche le signale au lieu d'échouer.
+  const brokenProject = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.market_create_investment_project('Projet incohérent (test)', '', 'commerce', 100000, 'GNF', 'Règles', current_date + 30)"),
+  );
+  await as(client, "authenticated", seller, () => client.query("select public.market_invest($1, 30)", [brokenProject.id]));
+  await client.query("update public.pay_wallets set balance = balance + 1 where project_id = $1 and type = 'escrow'", [brokenProject.id]);
+  await expire(brokenProject.id);
+  const jobReport = (await one(client, "select public.market_settle_due_investments_job() as r")).r;
+  const failureLog = await one(client, "select severity, actor from public.admin_audit_logs where action like $1", [`investment_settlement_failed:${brokenProject.id}:%`]);
+  check(
+    "dénouement planifié : un projet en échec est signalé (« critical ») sans bloquer la tâche",
+    jobReport.failed.length === 1 && jobReport.failed[0].project_id === brokenProject.id &&
+      failureLog?.severity === "critical" && failureLog?.actor === "system",
+    JSON.stringify(jobReport),
+  );
+  // Remise en cohérence pour les contrôles finaux.
+  await client.query("update public.pay_wallets set balance = balance - 1 where project_id = $1 and type = 'escrow'", [brokenProject.id]);
 
   const metrics2 = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
   check(

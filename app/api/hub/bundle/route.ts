@@ -8,7 +8,12 @@ export async function GET() {
 
   try {
     const results = await Promise.all([
-      supabase.from("user_profiles").select("*").eq("user_id", user.id).maybeSingle(),
+      // Colonnes explicites : l'empreinte du PIN n'est pas lisible (0025).
+      supabase
+        .from("user_profiles")
+        .select("id, user_id, city, language, trust_score, kyc_status, engagement, created_at, updated_at")
+        .eq("user_id", user.id)
+        .maybeSingle(),
       supabase.from("memberships").select("organization_id, role").eq("user_id", user.id),
       supabase
         .from("hub_favorites")

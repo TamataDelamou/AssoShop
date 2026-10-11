@@ -411,3 +411,31 @@ enabled = true
 # declarative_schema_path = "./schemas"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# --- Edge Functions AssoShop (supabase/functions) -----------------------------
+# verify_jwt = false : ces fonctions ne sont pas appelées avec un jeton
+# d'utilisateur Supabase. Elles vérifient elles-mêmes leur appelant : secret
+# partagé (webhook de l'opérateur, tâches planifiées) ou JWT inter-services du
+# Kernel. Sans leur secret, elles répondent 404.
+# import_map : résout « @supabase/supabase-js » pour Deno (supabase/functions/deno.json).
+[functions.pay-topup-confirm]
+verify_jwt = false
+import_map = "./functions/deno.json"
+
+[functions.investments-settle]
+verify_jwt = false
+import_map = "./functions/deno.json"
+
+[functions.control-plane-push]
+verify_jwt = false
+import_map = "./functions/deno.json"
+
+[functions.control-plane]
+verify_jwt = false
+import_map = "./functions/deno.json"
+
+# Appelée par l'application avec le jeton de l'utilisateur : la passerelle
+# vérifie le jeton, puis la fonction le revérifie auprès du service d'auth.
+[functions.ai-assistant]
+verify_jwt = true
+import_map = "./functions/deno.json"

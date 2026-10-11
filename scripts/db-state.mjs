@@ -30,6 +30,8 @@ export const MIGRATION_MARKERS = {
   "0022_reseller_transfer_investment.sql": [{ function: "market_review_reseller_application" }, { function: "pay_shares_organization" }, { column: ["pay_wallets", "project_id"] }, { noPolicy: ["market_reseller_applications", "market_apps_update"] }],
   "0023_investment_escrow_settlement.sql": [{ function: "market_settle_due_investments" }, { function: "market_review_investment_profit" }, { table: "market_investment_distributions" }, { column: ["market_investment_projects", "settled_at"] }],
   "0024_account_closure.sql": [{ function: "account_close" }, { function: "account_guard_user_delete" }, { table: "account_anonymizations" }],
+  "0025_flutter_backend.sql": [{ function: "pin_verify" }, { function: "account_close_self" }, { function: "admin_review_kyc" }, { function: "admin_funds_summary" }, { noPolicy: ["user_profiles", "user_profiles_update_own"] }],
+  "0026_scheduled_jobs.sql": [{ function: "cp_trigger_push" }, { function: "market_settle_due_investments_job" }],
 };
 
 export function pgClient() {
