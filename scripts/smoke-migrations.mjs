@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0022, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0023, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -618,7 +618,7 @@ export async function runSmokeTests(client) {
   check("clôture par le revendeur concerné", closed.status === "closed");
 
   const project = await as(client, "authenticated", buyer, () =>
-    one(client, "select * from public.market_create_investment_project('Projet de test', '', 'agriculture', 5000, 'GNF', 'Règles v1')"),
+    one(client, "select * from public.market_create_investment_project('Projet de test', '', 'agriculture', 5000, 'GNF', 'Règles v1', current_date + 30)"),
   );
   check("projet d'investissement créé avec son créateur", project.created_by === buyer && project.rules_locked === false);
 
@@ -850,6 +850,365 @@ export async function runSmokeTests(client) {
     as(client, "authenticated", candidate, () => client.query(SUBMIT)),
   );
   check("une candidature approuvée ne se redépose pas", err?.code === "PY019", err ? err.code : "accepté !");
+
+  // ---- 12. Séquestre des investissements : dénouement tout ou rien (0023) ----
+  const SETTLE = "select public.market_settle_due_investments() as r";
+  const settle = () => as(client, "service_role", null, async () => (await one(client, SETTLE)).r);
+  const projectRow = (id) =>
+    one(client, "select status, settled_at, released_amount, commission_amount, raised_amount from public.market_investment_projects where id = $1", [id]);
+  const expire = (id) =>
+    client.query("update public.market_investment_projects set deadline = current_date - 1 where id = $1", [id]);
+  const auditOf = async (entityId, eventType) =>
+    (await client.query("select amount, after from public.audit_events where entity_id = $1 and event_type = $2", [entityId, eventType])).rows;
+
+  for (const [label, sql] of [
+    ["sans date limite", "select public.market_create_investment_project('Sans échéance', '', 'commerce', 1000, 'GNF', 'Règles')"],
+    ["avec une date limite non future", "select public.market_create_investment_project('Échéance du jour', '', 'commerce', 1000, 'GNF', 'Règles', current_date)"],
+    ["sans montant recherché", "select public.market_create_investment_project('Sans objectif', '', 'commerce', 0, 'GNF', 'Règles', current_date + 30)"],
+  ]) {
+    err = await expectError(client, () => as(client, "authenticated", buyer, () => client.query(sql)));
+    check(`création d'un projet ${label} refusée`, err?.code === "PY009", err ? err.code : "acceptée !");
+  }
+
+  const investRate = Number(
+    (await one(client, "select rate from public.admin_commissions where service = 'Commission investissement'"))?.rate,
+  );
+  check("service « Commission investissement » présent (1 %)", investRate === 1, `taux ${investRate}`);
+  const shownRate = await as(client, "authenticated", outsider, () =>
+    one(client, "select public.market_investment_commission_rate() as rate"),
+  );
+  check("taux de commission lisible avant d'investir (RG-P03)", Number(shownRate.rate) === investRate, `taux ${shownRate.rate}`);
+
+  const metricsEscrow = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
+  const escrowSum = Number((await one(client, "select coalesce(sum(balance), 0) as total from public.pay_wallets where type = 'escrow'")).total);
+  check(
+    "cp_metrics_snapshot() expose le total bloqué en séquestre",
+    Number(metricsEscrow?.investment_escrow_balance) === escrowSum && escrowSum >= 310,
+    `métrique ${metricsEscrow?.investment_escrow_balance}, séquestres ${escrowSum}`,
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query(SETTLE)),
+  );
+  check("dénouement non appelable par un utilisateur", err?.code === "42501", err ? err.code : "accepté !");
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query("select public.market_settle_investment_project($1)", [project.id])),
+  );
+  check("dénouement d'un projet non appelable par son porteur", err?.code === "42501", err ? err.code : "accepté !");
+
+  // 12.a Objectif non atteint : remboursement intégral.
+  await settle();
+  check(
+    "aucun dénouement avant la date limite",
+    (await projectRow(project.id)).settled_at === null && (await escrowBalance(client, project.id)) === 310,
+    `séquestre ${await escrowBalance(client, project.id)}`,
+  );
+
+  await expire(project.id);
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () => client.query("select public.market_invest($1, 10)", [project.id])),
+  );
+  check("investissement refusé après la date limite", err?.code === "PY019", err ? err.code : "accepté !");
+
+  const outsiderBeforeRefund = await balanceOf(client, outsider);
+  const buyerBeforeRefund = await balanceOf(client, buyer);
+  const platformBeforeRefund = await platformBalance(client);
+  const refundRun = await settle();
+  const refundedProject = await projectRow(project.id);
+  check(
+    "objectif non atteint à l'échéance : projet remboursé",
+    refundRun.refunded === 1 && refundRun.failed.length === 0 && refundedProject.status === "refunded" && refundedProject.settled_at !== null,
+    JSON.stringify(refundRun),
+  );
+  check(
+    "chaque investisseur remboursé intégralement, sans commission",
+    (await balanceOf(client, outsider)) === outsiderBeforeRefund + 300 &&
+      (await balanceOf(client, buyer)) === buyerBeforeRefund + 10 &&
+      (await escrowBalance(client, project.id)) === 0 &&
+      (await platformBalance(client)) === platformBeforeRefund,
+    `investisseurs ${await balanceOf(client, outsider)} / ${await balanceOf(client, buyer)}, séquestre ${await escrowBalance(client, project.id)}`,
+  );
+  const refundLines = (
+    await client.query(
+      `select c.amount, c.refunded_at, t.type, t.status, t.amount as paid, t.user_id = c.user_id as same_user
+       from public.market_investment_contributions c
+       left join public.pay_transactions t on t.id = c.refund_transaction_id
+       where c.project_id = $1`,
+      [project.id],
+    )
+  ).rows;
+  check(
+    "chaque remboursement est écrit dans pay_transactions",
+    refundLines.length === 2 &&
+      refundLines.every((l) => l.refunded_at !== null && l.type === "receipt" && l.status === "confirmed" && Number(l.paid) === Number(l.amount) && l.same_user),
+    JSON.stringify(refundLines),
+  );
+  const refundAudit = await auditOf(project.id, "investment.refunded");
+  check(
+    "audit_events contient investment.refunded",
+    refundAudit.length === 1 && Number(refundAudit[0].amount) === 310 && refundAudit[0].after?.status === "refunded",
+    JSON.stringify(refundAudit),
+  );
+
+  const refundRerun = await settle();
+  const refundCount = await one(client, "select count(*)::int as n from public.pay_transactions where description = 'Remboursement d''investissement' and user_id in ($1, $2)", [outsider, buyer]);
+  check(
+    "second passage : aucun double remboursement",
+    refundRerun.refunded === 0 &&
+      refundCount.n === 2 &&
+      (await balanceOf(client, outsider)) === outsiderBeforeRefund + 300 &&
+      (await balanceOf(client, buyer)) === buyerBeforeRefund + 10 &&
+      (await auditOf(project.id, "investment.refunded")).length === 1,
+    `${JSON.stringify(refundRerun)}, ${refundCount.n} remboursement(s)`,
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query("select public.market_declare_investment_profit($1, 100)", [project.id])),
+  );
+  check("pas de bénéfice à déclarer sur un projet remboursé", err?.code === "PY019", err ? err.code : "accepté !");
+
+  // 12.b Objectif atteint : versement au porteur, commission à la plateforme.
+  const funded = await as(client, "authenticated", seller, () =>
+    one(client, "select * from public.market_create_investment_project('Projet financé (test)', '', 'commerce', 500, 'GNF', '60 % investisseurs / 40 % porteur', current_date + 10)"),
+  );
+  await as(client, "authenticated", outsider, () => client.query("select public.market_invest($1, 400)", [funded.id]));
+  await as(client, "authenticated", buyer, () => client.query("select public.market_invest($1, 20)", [funded.id]));
+  const reached = await as(client, "authenticated", outsider, () =>
+    one(client, "select * from public.market_invest($1, 100)", [funded.id]),
+  );
+  check("objectif atteint : collecte close, en attente de l'échéance", reached.status === "completed" && Number(reached.raised_amount) === 520, `statut ${reached.status}`);
+
+  await settle();
+  check(
+    "objectif atteint mais échéance non passée : séquestre conservé",
+    (await projectRow(funded.id)).settled_at === null && (await escrowBalance(client, funded.id)) === 520,
+    `séquestre ${await escrowBalance(client, funded.id)}`,
+  );
+
+  await expire(funded.id);
+  const investCommission = Math.round((520 * investRate) / 100);
+  const sellerBeforeRelease = await balanceOf(client, seller);
+  const outsiderBeforeRelease = await balanceOf(client, outsider);
+  const platformBeforeRelease = await platformBalance(client);
+  const releaseRun = await settle();
+  const fundedProject = await projectRow(funded.id);
+  check(
+    "objectif atteint à l'échéance : projet financé",
+    releaseRun.released === 1 && releaseRun.failed.length === 0 && fundedProject.status === "funded" && fundedProject.settled_at !== null,
+    JSON.stringify(releaseRun),
+  );
+  check(
+    `porteur crédité du séquestre moins la commission (${investRate} % = ${investCommission})`,
+    (await balanceOf(client, seller)) === sellerBeforeRelease + 520 - investCommission &&
+      Number(fundedProject.released_amount) === 520 - investCommission &&
+      Number(fundedProject.commission_amount) === investCommission,
+    `porteur ${await balanceOf(client, seller)}, attendu ${sellerBeforeRelease + 520 - investCommission}`,
+  );
+  check(
+    "commission créditée au portefeuille plateforme, séquestre soldé, investisseurs non recrédités",
+    (await platformBalance(client)) === platformBeforeRelease + investCommission &&
+      (await escrowBalance(client, funded.id)) === 0 &&
+      (await balanceOf(client, outsider)) === outsiderBeforeRelease,
+    `plateforme ${await platformBalance(client)}, séquestre ${await escrowBalance(client, funded.id)}`,
+  );
+  const releaseLine = await one(
+    client,
+    "select count(*)::int as n, max(amount) as amount, max(commission) as commission from public.pay_transactions where user_id = $1 and type = 'receipt' and module = 'market' and description like 'Versement du séquestre%'",
+    [seller],
+  );
+  check(
+    "le versement est écrit dans pay_transactions (net et commission)",
+    releaseLine.n === 1 && Number(releaseLine.amount) === 520 - investCommission && Number(releaseLine.commission) === investCommission,
+    JSON.stringify(releaseLine),
+  );
+  const releaseAudit = await auditOf(funded.id, "investment.released");
+  check(
+    "audit_events contient investment.released",
+    releaseAudit.length === 1 && Number(releaseAudit[0].amount) === 520 && Number(releaseAudit[0].after?.commission) === investCommission,
+    JSON.stringify(releaseAudit),
+  );
+
+  const releaseRerun = await settle();
+  const releaseCount = await one(client, "select count(*)::int as n from public.pay_transactions where user_id = $1 and description like 'Versement du séquestre%'", [seller]);
+  check(
+    "second passage : aucun double versement",
+    releaseRerun.released === 0 &&
+      releaseCount.n === 1 &&
+      (await balanceOf(client, seller)) === sellerBeforeRelease + 520 - investCommission &&
+      (await platformBalance(client)) === platformBeforeRelease + investCommission,
+    `${JSON.stringify(releaseRerun)}, ${releaseCount.n} versement(s)`,
+  );
+
+  // 12.c Bénéfices : déclaration par le porteur, validation par un admin.
+  const DECLARE = "select * from public.market_declare_investment_profit($1, $2)";
+  const REVIEW_PROFIT = "select * from public.market_review_investment_profit($1, $2)";
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () => client.query(DECLARE, [funded.id, 100])),
+  );
+  check("déclaration de bénéfice réservée au porteur", err?.code === "PY006", err ? err.code : "acceptée !");
+
+  const sellerBeforeProfit = await balanceOf(client, seller);
+  const outsiderBeforeProfit = await balanceOf(client, outsider);
+  const buyerBeforeProfit = await balanceOf(client, buyer);
+  const declared = await as(client, "authenticated", seller, () => one(client, DECLARE, [funded.id, 100]));
+  check(
+    "bénéfice déclaré en attente, sans mouvement de fonds",
+    declared.status === "pending" && Number(declared.amount) === 100 && (await balanceOf(client, seller)) === sellerBeforeProfit,
+    `statut ${declared.status}`,
+  );
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () => client.query(DECLARE, [funded.id, 50])),
+  );
+  check("une seule déclaration en attente par projet", err?.code === "PY019", err ? err.code : "acceptée !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () =>
+      client.query("update public.market_investment_distributions set status = 'approved' where id = $1", [declared.id]),
+    ),
+  );
+  check("le porteur ne peut pas valider sa déclaration par écriture directe", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () => client.query(REVIEW_PROFIT, [declared.id, "approved"])),
+  );
+  check("validation refusée au porteur", err?.code === "PY006", err ? err.code : "acceptée !");
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () => client.query(REVIEW_PROFIT, [declared.id, "approved"])),
+  );
+  check("validation refusée à un investisseur", err?.code === "PY006", err ? err.code : "acceptée !");
+  check(
+    "aucun mouvement après ces tentatives",
+    (await balanceOf(client, seller)) === sellerBeforeProfit && (await balanceOf(client, outsider)) === outsiderBeforeProfit,
+  );
+
+  // Mises : tiers 500, acheteur 20 (total 520) ; 100 à répartir → 96 et 3.
+  const distributed = await as(client, "authenticated", platformAdmin, () =>
+    one(client, REVIEW_PROFIT, [declared.id, "approved"]),
+  );
+  check(
+    "validation par un administrateur : répartition au prorata des mises",
+    distributed.status === "approved" &&
+      Number(distributed.distributed_amount) === 99 &&
+      (await balanceOf(client, outsider)) === outsiderBeforeProfit + 96 &&
+      (await balanceOf(client, buyer)) === buyerBeforeProfit + 3,
+    `distribué ${distributed.distributed_amount}, tiers ${(await balanceOf(client, outsider)) - outsiderBeforeProfit}, acheteur ${(await balanceOf(client, buyer)) - buyerBeforeProfit}`,
+  );
+  check(
+    "porteur débité du seul montant réparti (reliquat d'arrondi non prélevé)",
+    (await balanceOf(client, seller)) === sellerBeforeProfit - 99,
+    `porteur ${await balanceOf(client, seller)}, attendu ${sellerBeforeProfit - 99}`,
+  );
+  const shareRows = (
+    await client.query(
+      `select s.stake, s.amount, t.type, t.amount as paid, t.user_id = s.user_id as same_user
+       from public.market_investment_distribution_shares s
+       left join public.pay_transactions t on t.id = s.transaction_id
+       where s.distribution_id = $1 order by s.stake desc`,
+      [declared.id],
+    )
+  ).rows;
+  check(
+    "chaque part est tracée et écrite dans pay_transactions",
+    shareRows.length === 2 &&
+      Number(shareRows[0].stake) === 500 && Number(shareRows[0].amount) === 96 &&
+      Number(shareRows[1].stake) === 20 && Number(shareRows[1].amount) === 3 &&
+      shareRows.every((r) => r.type === "receipt" && Number(r.paid) === Number(r.amount) && r.same_user),
+    JSON.stringify(shareRows),
+  );
+  const profitAudit = await auditOf(declared.id, "investment.profit_distributed");
+  const profitLog = await one(client, "select count(*)::int as n from public.admin_audit_logs where action = $1", [`review_investment_profit:approved:${declared.id}`]);
+  check(
+    "audit_events contient investment.profit_distributed, décision journalisée",
+    profitAudit.length === 1 && Number(profitAudit[0].amount) === 99 && profitLog.n === 1,
+    `${JSON.stringify(profitAudit)}, ${profitLog.n} entrée(s) admin`,
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", platformAdmin, () => client.query(REVIEW_PROFIT, [declared.id, "approved"])),
+  );
+  check(
+    "seconde validation refusée : aucune double distribution",
+    err?.code === "PY019" &&
+      (await balanceOf(client, outsider)) === outsiderBeforeProfit + 96 &&
+      (await balanceOf(client, seller)) === sellerBeforeProfit - 99,
+    err ? err.code : "acceptée !",
+  );
+
+  const visibleShares = async (userId) =>
+    (await as(client, "authenticated", userId, () =>
+      one(client, "select count(*)::int as n from public.market_investment_distribution_shares where distribution_id = $1", [declared.id]),
+    )).n;
+  check(
+    "parts visibles du bénéficiaire et du porteur, pas d'un tiers",
+    (await visibleShares(outsider)) === 1 && (await visibleShares(seller)) === 2 && (await visibleShares(candidate)) === 0,
+    `investisseur ${await visibleShares(outsider)}, porteur ${await visibleShares(seller)}, tiers ${await visibleShares(candidate)}`,
+  );
+
+  // Bénéfice supérieur au solde du porteur : rien n'est distribué.
+  const tooMuch = await as(client, "authenticated", seller, () => one(client, DECLARE, [funded.id, 2000000000]));
+  const sellerBeforeTooMuch = await balanceOf(client, seller);
+  const outsiderBeforeTooMuch = await balanceOf(client, outsider);
+  err = await expectError(client, () =>
+    as(client, "authenticated", platformAdmin, () => client.query(REVIEW_PROFIT, [tooMuch.id, "approved"])),
+  );
+  const stillPending = await one(
+    client,
+    "select d.status, (select count(*)::int from public.market_investment_distribution_shares s where s.distribution_id = d.id) as shares from public.market_investment_distributions d where d.id = $1",
+    [tooMuch.id],
+  );
+  check(
+    "bénéfice supérieur au solde du porteur : validation refusée, rien n'est versé",
+    err?.code === "PY003" &&
+      stillPending.status === "pending" &&
+      stillPending.shares === 0 &&
+      (await balanceOf(client, seller)) === sellerBeforeTooMuch &&
+      (await balanceOf(client, outsider)) === outsiderBeforeTooMuch,
+    `${err ? err.code : "acceptée !"}, statut ${stillPending.status}`,
+  );
+  const rejectedProfit = await as(client, "authenticated", platformAdmin, () =>
+    one(client, REVIEW_PROFIT, [tooMuch.id, "rejected"]),
+  );
+  check(
+    "refus par un administrateur : aucun mouvement",
+    rejectedProfit.status === "rejected" && rejectedProfit.distributed_amount === null && (await balanceOf(client, seller)) === sellerBeforeTooMuch,
+    `statut ${rejectedProfit.status}`,
+  );
+
+  // 12.d Abandon par le porteur et échéance sans contribution.
+  const abandoned = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.market_create_investment_project('Projet abandonné (test)', '', 'elevage', 1000, 'GNF', 'Règles', current_date + 30)"),
+  );
+  const outsiderBeforeAbandon = await balanceOf(client, outsider);
+  await as(client, "authenticated", outsider, () => client.query("select public.market_invest($1, 50)", [abandoned.id]));
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () => client.query("select public.market_close_investment_project($1)", [abandoned.id])),
+  );
+  check("abandon d'un projet réservé à son porteur", err?.code === "PY006", err ? err.code : "accepté !");
+  const closedProject = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.market_close_investment_project($1)", [abandoned.id]),
+  );
+  check(
+    "abandon par le porteur : investisseurs remboursés aussitôt",
+    closedProject.status === "refunded" &&
+      (await balanceOf(client, outsider)) === outsiderBeforeAbandon &&
+      (await escrowBalance(client, abandoned.id)) === 0,
+    `statut ${closedProject.status}, investisseur ${await balanceOf(client, outsider)}`,
+  );
+
+  const empty = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.market_create_investment_project('Projet sans investisseur (test)', '', 'elevage', 1000, 'GNF', 'Règles', current_date + 30)"),
+  );
+  await expire(empty.id);
+  const emptyRun = await settle();
+  const emptyProject = await projectRow(empty.id);
+  check(
+    "échéance sans contribution : projet clôturé, sans mouvement",
+    emptyRun.expired === 1 && emptyRun.released === 0 && emptyRun.refunded === 0 && emptyRun.failed.length === 0 && emptyProject.status === "closed" && emptyProject.settled_at !== null,
+    JSON.stringify(emptyRun),
+  );
+
+  const escrowLeft = Number((await one(client, "select coalesce(sum(balance), 0) as total from public.pay_wallets where type = 'escrow' and project_id = any($1::uuid[])", [[project.id, funded.id, abandoned.id, empty.id]])).total);
+  check("plus aucun fonds bloqué sur les séquestres dénoués", escrowLeft === 0, `reste ${escrowLeft}`);
 
   const metrics2 = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
   check(

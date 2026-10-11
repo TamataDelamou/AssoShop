@@ -72,7 +72,13 @@ export default function AdminMarketPage() {
         />
       )}
       {activeTab === "investments" && (
-        <InvestmentsView projects={bundle.investments} />
+        <InvestmentsView
+          projects={bundle.investments}
+          distributions={bundle.investment_distributions}
+          escrowTotal={bundle.escrow_total}
+          online={online}
+          onChanged={refetch}
+        />
       )}
     </AdminShell>
   );

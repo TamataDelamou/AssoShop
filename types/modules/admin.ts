@@ -205,6 +205,24 @@ export interface InvestmentProject {
   raised_amount: number;
   status: string;
   currency: string;
+  // Date limite de collecte (ISO) ; null pour un projet sans échéance.
+  deadline: string | null;
+  // Solde du compte de séquestre du projet.
+  escrow_balance: number;
+  investors_count: number;
+}
+
+// Bénéfice déclaré par un porteur de projet, à valider (WEB-25).
+export interface InvestmentDistribution {
+  id: string;
+  project_id: string;
+  project_name: string;
+  profit_sharing_rules: string;
+  amount: number;
+  distributed_amount: number | null;
+  currency: string;
+  status: ReviewStatus;
+  declared_at: Date;
 }
 
 export interface CommissionRule {
@@ -285,6 +303,9 @@ export interface AdminBundle {
   categories: CatalogCategory[];
   moderation: ModerationItem[];
   investments: InvestmentProject[];
+  investment_distributions: InvestmentDistribution[];
+  // Total bloqué sur les comptes de séquestre des projets.
+  escrow_total: number;
   commissions: CommissionRule[];
   // Portefeuille plateforme (commissions encaissées) ; null s'il n'existe pas.
   platform_wallet: { balance: number; currency: string } | null;

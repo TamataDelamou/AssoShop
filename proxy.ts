@@ -31,11 +31,11 @@ export async function proxy(request: NextRequest) {
   return response;
 }
 
-// Les appels inter-services du Control Plane GSG (sans cookie de session)
-// et le webhook de confirmation des recharges ne passent pas par le
-// rafraîchissement de session Supabase.
+// Les appels inter-services du Control Plane GSG (sans cookie de session),
+// le webhook de confirmation des recharges et les tâches planifiées ne
+// passent pas par le rafraîchissement de session Supabase.
 export const config = {
   matcher: [
-    "/((?!api/control-plane|api/pay/topup/confirm|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!api/control-plane|api/cron|api/pay/topup/confirm|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

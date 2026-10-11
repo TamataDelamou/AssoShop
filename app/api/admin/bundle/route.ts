@@ -75,6 +75,20 @@ export async function GET() {
       .eq("type", "platform")
       .maybeSingle();
 
+    // Séquestres et bénéfices déclarés : service_role uniquement.
+    const [escrows, investmentContributions, investmentDistributions] =
+      await Promise.all([
+        supabase.from("pay_wallets").select("project_id, balance").eq("type", "escrow"),
+        supabase.from("market_investment_contributions").select("project_id, user_id"),
+        supabase
+          .from("market_investment_distributions")
+          .select("*")
+          .order("declared_at", { ascending: false }),
+      ]);
+    for (const r of [escrows, investmentContributions, investmentDistributions]) {
+      if (r.error) throw r.error;
+    }
+
     const [
       orgCountRes,
       groupCountRes,
@@ -161,6 +175,22 @@ export async function GET() {
       .reduce((sum, t) => sum + (t.amount ?? 0), 0);
     const revenue = txs.reduce((sum, t) => sum + (t.commission ?? 0), 0);
 
+    const escrowByProject: Record<string, number> = {};
+    for (const e of escrows.data ?? []) {
+      if (e.project_id) escrowByProject[e.project_id] = e.balance ?? 0;
+    }
+    const escrowTotal = Object.values(escrowByProject).reduce((sum, b) => sum + b, 0);
+    const investorsByProject: Record<string, Set<string>> = {};
+    for (const c of investmentContributions.data ?? []) {
+      (investorsByProject[c.project_id] ??= new Set()).add(c.user_id);
+    }
+    const projectById = new Map(
+      (investments.data ?? []).map((p) => [p.id as string, p]),
+    );
+    const userNames = new Map(
+      (users as { id: string; name: string }[]).map((u) => [u.id, u.name]),
+    );
+
     const cfg = config.data;
     const platformConfig = {
       platform_name: cfg?.platform_name ?? "AssoShop",
@@ -244,12 +274,27 @@ export async function GET() {
       investments: (investments.data ?? []).map((p) => ({
         id: p.id,
         name: p.name,
-        promoter: "",
+        promoter: userNames.get(p.created_by) ?? "",
         target_amount: p.target_amount,
         raised_amount: p.raised_amount,
         status: p.status,
         currency: p.currency,
+        deadline: p.deadline ?? null,
+        escrow_balance: escrowByProject[p.id] ?? 0,
+        investors_count: investorsByProject[p.id]?.size ?? 0,
       })),
+      investment_distributions: (investmentDistributions.data ?? []).map((d) => ({
+        id: d.id,
+        project_id: d.project_id,
+        project_name: projectById.get(d.project_id)?.name ?? "",
+        profit_sharing_rules: projectById.get(d.project_id)?.profit_sharing_rules ?? "",
+        amount: d.amount,
+        distributed_amount: d.distributed_amount,
+        currency: d.currency,
+        status: d.status,
+        declared_at: d.declared_at,
+      })),
+      escrow_total: escrowTotal,
       commissions: commissions.data ?? [],
       platform_wallet: platformWallet ?? null,
       plans: plans.data ?? [],

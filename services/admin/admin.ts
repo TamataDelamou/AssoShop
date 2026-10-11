@@ -33,6 +33,17 @@ export const adminService = {
     return response.data;
   },
 
+  async reviewInvestmentDistribution(
+    id: string,
+    status: ReviewStatus,
+  ): Promise<{ id: string }> {
+    const response = await base44Client.post(
+      `/admin/investments/distributions/${id}/review`,
+      { status },
+    );
+    return response.data;
+  },
+
   async reviewModeration(
     id: string,
     status: ReviewStatus,

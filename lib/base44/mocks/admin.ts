@@ -43,6 +43,8 @@ type InvoiceDTO = Omit<SubscriptionInvoice, "due_at"> & { due_at: string };
 const BUNDLE_URL = /^\/admin\/bundle$/;
 const RESELLER_REVIEW_URL = /^\/admin\/resellers\/([^/]+)\/review$/;
 const MODERATION_REVIEW_URL = /^\/admin\/moderation\/([^/]+)\/review$/;
+const DISTRIBUTION_REVIEW_URL =
+  /^\/admin\/investments\/distributions\/([^/]+)\/review$/;
 const USER_SUSPEND_URL = /^\/admin\/users\/([^/]+)\/suspend$/;
 const KYC_REVIEW_URL = /^\/admin\/kyc\/([^/]+)\/review$/;
 const DISPUTE_STATUS_URL = /^\/admin\/disputes\/([^/]+)\/status$/;
@@ -443,8 +445,11 @@ const investments = [
     promoter: "Coopérative agricole de Kindia",
     target_amount: 15000000,
     raised_amount: 9400000,
-    status: "active",
+    status: "open",
     currency: "GNF",
+    deadline: "2026-12-31",
+    escrow_balance: 9400000,
+    investors_count: 14,
   },
   {
     id: "inv-2",
@@ -452,8 +457,25 @@ const investments = [
     promoter: "Association GSG Conakry",
     target_amount: 8000000,
     raised_amount: 8000000,
-    status: "clôturé",
+    status: "funded",
     currency: "GNF",
+    deadline: "2026-06-30",
+    escrow_balance: 0,
+    investors_count: 9,
+  },
+];
+
+const investmentDistributions = [
+  {
+    id: "dist-1",
+    project_id: "inv-2",
+    project_name: "Atelier de couture",
+    profit_sharing_rules: "60 % investisseurs / 40 % porteur.",
+    amount: 600000,
+    distributed_amount: null as number | null,
+    currency: "GNF",
+    status: ReviewStatus.PENDING,
+    declared_at: "2026-09-15T10:00:00.000Z",
   },
 ];
 
@@ -593,6 +615,8 @@ function getBundle() {
     categories: clone(categories),
     moderation: clone(moderation),
     investments: clone(investments),
+    investment_distributions: clone(investmentDistributions),
+    escrow_total: investments.reduce((sum, p) => sum + p.escrow_balance, 0),
     commissions: clone(commissions),
     platform_wallet: { balance: 1284500, currency: "GNF" },
     plans: clone(plans),
@@ -612,6 +636,14 @@ function reviewReseller(id: string, status: ReviewStatus): ResellerDTO[] {
   const item = resellers.find((r) => r.id === id);
   if (item) item.status = status;
   return clone(resellers);
+}
+
+function reviewInvestmentDistribution(id: string, status: ReviewStatus) {
+  const item = investmentDistributions.find((d) => d.id === id);
+  if (!item || item.status !== ReviewStatus.PENDING) return null;
+  item.status = status;
+  if (status === ReviewStatus.APPROVED) item.distributed_amount = item.amount;
+  return clone(item);
 }
 
 function reviewModeration(id: string, status: ReviewStatus): ModerationDTO[] {
@@ -711,6 +743,13 @@ export function adminMockAdapter(
       const id = cfg.url?.match(RESELLER_REVIEW_URL)?.[1] ?? "";
       const status = (cfg.data as { status: ReviewStatus }).status;
       return toResponse(reviewReseller(id, status));
+    };
+  }
+  if (method === "post" && DISTRIBUTION_REVIEW_URL.test(url)) {
+    return async (cfg) => {
+      const id = cfg.url?.match(DISTRIBUTION_REVIEW_URL)?.[1] ?? "";
+      const status = (cfg.data as { status: ReviewStatus }).status;
+      return toResponse(reviewInvestmentDistribution(id, status));
     };
   }
   if (method === "post" && MODERATION_REVIEW_URL.test(url)) {

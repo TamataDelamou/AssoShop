@@ -1,6 +1,7 @@
 import { base44Client } from "@/lib/base44";
 import {
   CreateInvestmentProjectPayload,
+  DeclareProfitPayload,
   InvestmentProject,
   InvestPayload,
 } from "@/types/modules/market";
@@ -32,6 +33,22 @@ export const investmentsService = {
     );
     if (!response.data) {
       throw new Error(MARKET_MESSAGES.INVEST_ERROR);
+    }
+    return response.data;
+  },
+
+  // Porteur d'un projet financé : la répartition n'a lieu qu'après
+  // validation par un administrateur de la plateforme.
+  async declareProfit(
+    projectId: string,
+    payload: DeclareProfitPayload,
+  ): Promise<{ id: string }> {
+    const response = await base44Client.post(
+      `/market/investments/${projectId}/profit`,
+      payload,
+    );
+    if (!response.data) {
+      throw new Error(MARKET_MESSAGES.DECLARE_PROFIT_ERROR);
     }
     return response.data;
   },
