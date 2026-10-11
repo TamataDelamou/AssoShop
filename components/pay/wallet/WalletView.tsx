@@ -3,9 +3,11 @@
 import { useState } from "react";
 import {
   PaymentMethod,
+  TransactionStatus,
   Wallet,
 } from "@/types/modules/pay";
 import { payService } from "@/services/pay/pay";
+import { usePayRecipients } from "@/hooks/pay/usePayRecipients";
 import {
   Card,
   CardContent,
@@ -65,6 +67,8 @@ export function WalletView({
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [methodOpen, setMethodOpen] = useState(false);
+  // Recharge créée mais pas encore confirmée par l'opérateur.
+  const [topupPending, setTopupPending] = useState(false);
 
   const active = wallets.find((w) => w.id === activeId) ?? wallets[0];
 
@@ -74,7 +78,11 @@ export function WalletView({
     amount: number;
   }) => {
     if (!active) return;
-    await payService.topup({ wallet_id: active.id, ...payload });
+    const transaction = await payService.topup({
+      wallet_id: active.id,
+      ...payload,
+    });
+    setTopupPending(transaction.status === TransactionStatus.PENDING);
     await onChanged();
     setTopupOpen(false);
   };
@@ -91,7 +99,7 @@ export function WalletView({
   };
 
   const handleTransfer = async (payload: {
-    to_member: string;
+    to_member_id: string;
     amount: number;
   }) => {
     if (!active) return;
@@ -102,6 +110,11 @@ export function WalletView({
 
   return (
     <div className="space-y-6">
+      {topupPending && (
+        <Alert className="max-w-2xl border-amber-500/40 bg-amber-500/10">
+          <AlertDescription>{PAY_LABELS.TOPUP_PENDING_NOTICE}</AlertDescription>
+        </Alert>
+      )}
       <div className="max-w-sm">
         <Label className="mb-1 block text-xs text-muted-foreground">
           {PAY_LABELS.WALLET_SELECTOR}
@@ -418,16 +431,23 @@ function TransferDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (payload: { to_member: string; amount: number }) => Promise<void>;
+  onSubmit: (payload: { to_member_id: string; amount: number }) => Promise<void>;
 }) {
-  const [toMember, setToMember] = useState("");
+  // Destinataires : membres des organisations de l'utilisateur, chargés à
+  // l'ouverture du dialogue.
+  const {
+    recipients,
+    loading: recipientsLoading,
+    error: recipientsError,
+  } = usePayRecipients(open);
+  const [memberId, setMemberId] = useState("");
   const [amount, setAmount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
     setError(null);
-    if (!toMember.trim()) {
+    if (!memberId) {
       setError(PAY_MESSAGES.MEMBER_REQUIRED);
       return;
     }
@@ -437,8 +457,8 @@ function TransferDialog({
     }
     setBusy(true);
     try {
-      await onSubmit({ to_member: toMember.trim(), amount });
-      setToMember("");
+      await onSubmit({ to_member_id: memberId, amount });
+      setMemberId("");
       setAmount(0);
     } catch (err) {
       setError((err as Error).message);
@@ -452,20 +472,40 @@ function TransferDialog({
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>{PAY_LABELS.TRANSFER}</DialogTitle>
-          <DialogDescription>
-            Envoi direct à un autre membre de la plateforme.
-          </DialogDescription>
+          <DialogDescription>{PAY_LABELS.TRANSFER_DESCRIPTION}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div>
             <Label className="mb-1 block text-xs text-muted-foreground">
               {PAY_LABELS.RECIPIENT}
             </Label>
-            <Input
-              value={toMember}
-              onChange={(e) => setToMember(e.target.value)}
-              placeholder="Nom du membre"
-            />
+            <select
+              value={memberId}
+              onChange={(e) => setMemberId(e.target.value)}
+              className={selectStyles}
+              disabled={busy || recipients.length === 0}
+            >
+              <option value="">
+                {recipientsLoading
+                  ? PAY_LABELS.RECIPIENTS_LOADING
+                  : PAY_LABELS.RECIPIENT_PLACEHOLDER}
+              </option>
+              {recipients.map((recipient) => (
+                <option key={recipient.member_id} value={recipient.member_id}>
+                  {recipient.name}
+                  {recipient.organization_name
+                    ? ` · ${recipient.organization_name}`
+                    : ""}
+                </option>
+              ))}
+            </select>
+            {!recipientsLoading && recipients.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {recipientsError
+                  ? PAY_MESSAGES.RECIPIENTS_LOAD_ERROR
+                  : PAY_LABELS.NO_RECIPIENTS}
+              </p>
+            )}
           </div>
           <div>
             <Label className="mb-1 block text-xs text-muted-foreground">
@@ -483,7 +523,11 @@ function TransferDialog({
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
-          <Button className="w-full" onClick={submit} disabled={busy}>
+          <Button
+            className="w-full"
+            onClick={submit}
+            disabled={busy || recipients.length === 0}
+          >
             {PAY_LABELS.TRANSFER}
           </Button>
         </div>

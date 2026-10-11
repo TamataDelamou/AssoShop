@@ -21,7 +21,9 @@ import {
 } from "@/components/ui/dialog";
 import { formatCurrency, formatDateTime } from "@/utils/formatters";
 import { MARKET_LABELS, ORDER_STATUS_LABELS } from "@/utils/constants";
-import { QrCode, UserCheck } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { canAdvanceOrder } from "@/lib/market-orders";
+import { PackageCheck, QrCode, Truck, UserCheck } from "lucide-react";
 
 function StatusBadge({ status }: { status: OrderStatus }) {
   const variant =
@@ -46,12 +48,30 @@ export function ResellerOrders({ orders, onChanged }: ResellerOrdersProps) {
   const [deliverTarget, setDeliverTarget] = useState<Order | null>(null);
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleScan = async (order: Order) => {
     setBusy(true);
+    setError(null);
     try {
       await resellerService.scanParcel(order.id);
       onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Expédiée puis arrivée : étapes déclarées par le revendeur.
+  const handleAdvance = async (order: Order, status: OrderStatus) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await resellerService.advanceOrder(order.id, status);
+      onChanged();
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -60,11 +80,14 @@ export function ResellerOrders({ orders, onChanged }: ResellerOrdersProps) {
   const handleDeliver = async () => {
     if (!deliverTarget) return;
     setBusy(true);
+    setError(null);
     try {
       await resellerService.deliverParcel(deliverTarget.id, recipient.trim());
       setDeliverTarget(null);
       setRecipient("");
       onChanged();
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -80,6 +103,11 @@ export function ResellerOrders({ orders, onChanged }: ResellerOrdersProps) {
 
   return (
     <div className="space-y-4">
+      {error && (
+        <Alert variant="destructive" className="border-destructive/50">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
       {orders.map((order) => (
         <Card key={order.id}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -117,6 +145,28 @@ export function ResellerOrders({ orders, onChanged }: ResellerOrdersProps) {
               {formatDateTime(order.created_at)}
             </p>
 
+            {canAdvanceOrder(order, OrderStatus.SHIPPED) && (
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={() => handleAdvance(order, OrderStatus.SHIPPED)}
+                disabled={busy}
+              >
+                <Truck className="mr-1.5 h-4 w-4" />
+                {MARKET_LABELS.MARK_SHIPPED}
+              </Button>
+            )}
+            {canAdvanceOrder(order, OrderStatus.ARRIVED) && (
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={() => handleAdvance(order, OrderStatus.ARRIVED)}
+                disabled={busy}
+              >
+                <PackageCheck className="mr-1.5 h-4 w-4" />
+                {MARKET_LABELS.MARK_ARRIVED}
+              </Button>
+            )}
             {order.status === OrderStatus.ARRIVED && (
               <Button
                 size="sm"

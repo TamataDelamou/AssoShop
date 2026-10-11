@@ -7,14 +7,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ADMIN_LABELS } from "@/utils/constants";
-import { Percent, Plus } from "lucide-react";
+import { formatCurrency } from "@/utils/formatters";
+import { Landmark, Percent, Plus } from "lucide-react";
 
 export function CommissionsView({
   commissions,
+  platformWallet,
   online,
   onChanged,
 }: {
   commissions: CommissionRule[];
+  platformWallet: { balance: number; currency: string } | null;
   online: boolean;
   onChanged: () => Promise<void>;
 }) {
@@ -44,6 +47,22 @@ export function CommissionsView({
 
   return (
     <div className="space-y-6">
+      {platformWallet && (
+        <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="flex items-center gap-3">
+            <Landmark className="h-5 w-5 text-primary" />
+            <div>
+              <p className="text-sm font-medium">{ADMIN_LABELS.PLATFORM_WALLET}</p>
+              <p className="text-xs text-muted-foreground">
+                {ADMIN_LABELS.PLATFORM_WALLET_HINT}
+              </p>
+            </div>
+          </div>
+          <p className="text-lg font-bold">
+            {formatCurrency(platformWallet.balance, platformWallet.currency)}
+          </p>
+        </div>
+      )}
       <div className="space-y-3">
         {commissions.map((commission) => (
           <div

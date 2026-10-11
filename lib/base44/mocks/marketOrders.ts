@@ -21,6 +21,7 @@ import {
 
 const ORDERS_URL = /^\/market\/orders$/;
 const PAY_URL = /^\/market\/orders\/([^/]+)\/pay$/;
+const CANCEL_URL = /^\/market\/orders\/([^/]+)\/cancel$/;
 const GROUP_ORDERS_URL = /^\/market\/orders\/group$/;
 const JOIN_GROUP_URL = /^\/market\/orders\/group\/([^/]+)\/join$/;
 const WALLET_URL = /^\/market\/wallet$/;
@@ -176,6 +177,21 @@ function payOrder(config: InternalAxiosRequestConfig): OrderDTO | null {
   return clone(order);
 }
 
+// L'acheteur ne peut annuler qu'une commande non payée.
+function cancelOrder(config: InternalAxiosRequestConfig): OrderDTO | null {
+  const match = config.url?.match(CANCEL_URL);
+  if (!match) return null;
+
+  const order = marketOrders.find((o) => o.id === match[1]);
+  if (!order || order.paid || order.status !== OrderStatus.PENDING_PAYMENT) {
+    return null;
+  }
+
+  order.status = OrderStatus.CANCELLED;
+  order.updated_at = new Date().toISOString();
+  return clone(order);
+}
+
 function createGroupOrder(
   config: InternalAxiosRequestConfig,
 ): GroupOrder | null {
@@ -192,8 +208,9 @@ function createGroupOrder(
     min_participants: payload.min_participants,
     participants: 1,
     deadline: payload.deadline,
-    unit_price: payload.unit_price,
-    currency: payload.currency,
+    // Comme en base : le prix vient du produit, pas de l'appelant.
+    unit_price: product.retail_price,
+    currency: product.currency,
     status: GroupOrderStatus.OPEN,
     joined: true,
   };
@@ -230,6 +247,9 @@ export function marketOrdersMockAdapter(
   }
   if (method === "post" && PAY_URL.test(url)) {
     return async (cfg) => toResponse(payOrder(cfg));
+  }
+  if (method === "post" && CANCEL_URL.test(url)) {
+    return async (cfg) => toResponse(cancelOrder(cfg));
   }
   if (method === "get" && GROUP_ORDERS_URL.test(url)) {
     return async () => toResponse(getGroupOrders());

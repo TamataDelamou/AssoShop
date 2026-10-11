@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0019, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0021, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -55,6 +55,11 @@ async function balanceOf(client, userId) {
   return row ? Number(row.balance) : null;
 }
 
+async function platformBalance(client) {
+  const row = await one(client, "select balance from public.pay_wallets where type = 'platform'");
+  return row ? Number(row.balance) : null;
+}
+
 async function createUser(client, label) {
   const row = await one(
     client,
@@ -74,6 +79,8 @@ export async function runSmokeTests(client) {
   const buyer = await createUser(client, "acheteur");
   const seller = await createUser(client, "revendeur");
   const outsider = await createUser(client, "tiers");
+  const platformBefore = await platformBalance(client);
+  check("portefeuille plateforme unique présent", platformBefore !== null);
 
   // ---- 1. Écriture directe dans pay_wallets refusée ----
   await as(client, "authenticated", buyer, () => client.query("select public.pay_ensure_wallet()"));
@@ -379,14 +386,237 @@ export async function runSmokeTests(client) {
     `audit_events_24h = ${metrics?.audit_events_24h}`,
   );
 
-  // ---- 6. Soldes négatifs (contrainte « not valid ») ----
+  // ---- 7. Portefeuille plateforme (0021) ----
+  const platformAfter = await platformBalance(client);
+  check(
+    "portefeuille plateforme crédité des commissions (recharge + vente)",
+    platformAfter === platformBefore + fee + commission,
+    `solde ${platformAfter}, attendu ${platformBefore + fee + commission}`,
+  );
+  const platformVisible = await as(client, "authenticated", buyer, () =>
+    one(client, "select count(*)::int as n from public.pay_wallets where type = 'platform'"),
+  );
+  check("portefeuille plateforme invisible pour un utilisateur", platformVisible.n === 0, `${platformVisible.n} ligne(s) visibles`);
+
+  const beforeWithdraw = await platformBalance(client);
+  const withdrawal = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.pay_withdraw(1000)"),
+  );
+  check(
+    "la commission de retrait va au portefeuille plateforme",
+    (await platformBalance(client)) === beforeWithdraw + Number(withdrawal.commission) && Number(withdrawal.commission) > 0,
+    `commission ${withdrawal.commission}`,
+  );
+
+  // ---- 8. Stock et quantité minimale (0021) ----
+  const stockA = await one(client, "select stock from public.market_products where id = $1", [productA.id]);
+  const stockB = await one(client, "select stock from public.market_products where id = $1", [productB.id]);
+  check("stock décrémenté au paiement", stockA.stock === 98 && stockB.stock === 99, `A ${stockA.stock}, B ${stockB.stock}`);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.market_create_order($1::jsonb)", [
+        JSON.stringify([{ product_id: productA.id, quantity: 500 }]),
+      ]),
+    ),
+  );
+  check("commande au-delà du stock refusée", err?.code === "PY016", err ? err.code : "acceptée !");
+
+  const productMin = await one(
+    client,
+    "insert into public.market_products (reseller_id, name, retail_price, wholesale_price, stock, min_order_quantity, status) values ($1, 'Produit lot (test)', 100, 100, 50, 5, 'published') returning id",
+    [reseller.id],
+  );
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.market_create_order($1::jsonb)", [
+        JSON.stringify([{ product_id: productMin.id, quantity: 2 }]),
+      ]),
+    ),
+  );
+  check("commande sous la quantité minimale refusée", err?.code === "PY017", err ? err.code : "acceptée !");
+
+  // Deux commandes se partagent un stock de 3 : la seconde échoue au paiement.
+  const productRare = await one(
+    client,
+    "insert into public.market_products (reseller_id, name, retail_price, wholesale_price, stock, status) values ($1, 'Produit rare (test)', 100, 100, 3, 'published') returning id",
+    [reseller.id],
+  );
+  const rareItems = JSON.stringify([{ product_id: productRare.id, quantity: 2 }]);
+  const first = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.market_create_order($1::jsonb)", [rareItems]),
+  );
+  const second = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.market_create_order($1::jsonb)", [rareItems]),
+  );
+  await as(client, "authenticated", buyer, () =>
+    client.query("select public.market_pay_order($1)", [first.id]),
+  );
+  const balanceBeforeSecond = await balanceOf(client, buyer);
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.market_pay_order($1)", [second.id]),
+    ),
+  );
+  const rareStock = await one(client, "select stock from public.market_products where id = $1", [productRare.id]);
+  check(
+    "paiement refusé si le stock est devenu insuffisant, sans débit",
+    err?.code === "PY016" && rareStock.stock === 1 && (await balanceOf(client, buyer)) === balanceBeforeSecond,
+    `${err ? err.code : "accepté !"}, stock ${rareStock.stock}`,
+  );
+
+  // ---- 9. Transfert vers un destinataire réel (0021) ----
+  const senderBefore = await balanceOf(client, buyer);
+  const transfer = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.pay_transfer(500, $1::uuid)", [outsider]),
+  );
+  check(
+    "transfert par identifiant utilisateur : émetteur débité, destinataire crédité",
+    transfer.type === "transfer" &&
+      (await balanceOf(client, buyer)) === senderBefore - 500 &&
+      (await balanceOf(client, outsider)) === 500,
+    `émetteur ${await balanceOf(client, buyer)}, destinataire ${await balanceOf(client, outsider)}`,
+  );
+  const receiptLine = await one(
+    client,
+    "select count(*)::int as n from public.pay_transactions where user_id = $1 and type = 'receipt' and amount = 500 and module = 'pay'",
+    [outsider],
+  );
+  check("le destinataire a sa ligne d'encaissement", receiptLine.n === 1);
+
+  await as(client, "authenticated", buyer, () =>
+    client.query("select public.pay_transfer(200, null, $1::uuid)", [member.id]),
+  );
+  check(
+    "transfert vers un membre d'une organisation commune",
+    (await balanceOf(client, outsider)) === 700,
+    `destinataire ${await balanceOf(client, outsider)}`,
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () =>
+      client.query("select public.pay_transfer(100, null, $1::uuid)", [member.id]),
+    ),
+  );
+  check("membre d'une organisation non commune refusé", err?.code === "PY014", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_transfer(100, $1::uuid)", [buyer]),
+    ),
+  );
+  check("transfert vers soi-même refusé", err?.code === "PY013", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_transfer(100, gen_random_uuid())"),
+    ),
+  );
+  check("destinataire inconnu refusé", err?.code === "PY014", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_transfer(100, 'Mamadou'::text)"),
+    ),
+  );
+  check("destinataire en libellé libre impossible", err !== null, "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_transfer(100000000, $1::uuid)", [outsider]),
+    ),
+  );
+  check("transfert au-delà du solde refusé", err?.code === "PY003", err ? err.code : "accepté !");
+
+  // ---- 10. Commandes groupées, investissement, retraits (0021) ----
+  const group = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.market_create_group_order($1, 2)", [productA.id]),
+  );
+  check(
+    "commande groupée créée au prix du produit",
+    group.status === "open" && Number(group.unit_price) === PRICE_A && group.creator_id === buyer,
+    `statut ${group.status}, prix ${group.unit_price}`,
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () =>
+      client.query("update public.market_group_orders set unit_price = 1, status = 'closed' where id = $1", [group.id]),
+    ),
+  );
+  check("UPDATE direct d'une commande groupée refusé", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  const joined = await as(client, "authenticated", outsider, () =>
+    one(client, "select * from public.market_join_group_order($1)", [group.id]),
+  );
+  check("commande groupée confirmée au minimum de participants (RG-M02)", joined.status === "confirmed", `statut ${joined.status}`);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () =>
+      client.query("select public.market_close_group_order($1)", [group.id]),
+    ),
+  );
+  check("clôture par un simple participant refusée", err?.code === "PY006", err ? err.code : "acceptée !");
+  const closed = await as(client, "authenticated", seller, () =>
+    one(client, "select * from public.market_close_group_order($1)", [group.id]),
+  );
+  check("clôture par le revendeur concerné", closed.status === "closed");
+
+  const project = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.market_create_investment_project('Projet de test', '', 'agriculture', 5000, 'GNF', 'Règles v1')"),
+  );
+  check("projet d'investissement créé avec son créateur", project.created_by === buyer && project.rules_locked === false);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () =>
+      client.query("update public.market_investment_projects set raised_amount = 999999, profit_sharing_rules = 'piraté' where id = $1", [project.id]),
+    ),
+  );
+  check("UPDATE direct d'un projet refusé", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () =>
+      client.query("select public.market_update_investment_rules($1, 'piraté')", [project.id]),
+    ),
+  );
+  check("règles modifiables par le seul créateur", err?.code === "PY006", err ? err.code : "accepté !");
+
+  const invested = await as(client, "authenticated", outsider, () =>
+    one(client, "select * from public.market_invest($1, 1000)", [project.id]),
+  );
+  check("investissement enregistré, règles verrouillées (RG-M05)", Number(invested.raised_amount) === 1000 && invested.rules_locked === true);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.market_update_investment_rules($1, 'Règles v2')", [project.id]),
+    ),
+  );
+  check("règles figées après le premier investissement", err?.code === "PY019", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () =>
+      client.query(
+        "insert into public.market_pickup_records (order_id, tracking_code, status) values ($1, 'FAUX', 'delivered')",
+        [order.id],
+      ),
+    ),
+  );
+  check("écriture directe du suivi de retrait refusée", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  const metrics2 = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
+  check(
+    "cp_metrics_snapshot() expose platform_wallet_balance",
+    Number(metrics2?.platform_wallet_balance) === (await platformBalance(client)),
+    `valeur ${metrics2?.platform_wallet_balance}`,
+  );
+
+  // ---- 6. Soldes négatifs ----
   const negative = await one(client, "select count(*)::int as n from public.pay_wallets where balance < 0");
   check(
     "aucun portefeuille à solde négatif",
     negative.n === 0,
     negative.n === 0
-      ? "la contrainte pay_wallets_balance_non_negative peut être validée"
-      : `${negative.n} portefeuille(s) à corriger avant de valider la contrainte`,
+      ? ""
+      : `${negative.n} portefeuille(s) à solde négatif`,
   );
 
   return results;

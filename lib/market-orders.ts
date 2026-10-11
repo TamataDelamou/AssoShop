@@ -14,6 +14,20 @@ export const ORDER_LOGISTICS_FLOW: OrderStatus[] = [
   OrderStatus.DELIVERED,
 ];
 
+// Étapes que le revendeur déclare lui-même. « Prête au retrait » passe par
+// le scan du colis (RG-M03) et « livrée » par la remise au client.
+export const MANUAL_ADVANCE_STATUSES: OrderStatus[] = [
+  OrderStatus.SHIPPED,
+  OrderStatus.ARRIVED,
+];
+
+export function isManualAdvanceStatus(value: unknown): value is OrderStatus {
+  return (
+    typeof value === "string" &&
+    (MANUAL_ADVANCE_STATUSES as string[]).includes(value)
+  );
+}
+
 // Libellé du taux lu dans admin_commissions (market_pay_order).
 export const RESELLER_COMMISSION_SERVICE = "Commission revendeur B2B";
 

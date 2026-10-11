@@ -51,6 +51,7 @@ export default function AdminBillingPage() {
       {activeTab === "commissions" && (
         <CommissionsView
           commissions={bundle.commissions}
+          platformWallet={bundle.platform_wallet}
           online={online}
           onChanged={refetch}
         />

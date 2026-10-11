@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 type GroupOrderRow = {
   id: string;
@@ -77,55 +78,47 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase, user } = ctx;
+  const { supabase } = ctx;
 
   const payload = (await request.json().catch(() => null)) as {
     product_id?: string;
     min_participants?: number;
     deadline?: string;
-    unit_price?: number;
-    currency?: string;
   } | null;
 
-  try {
-    if (!payload?.product_id) {
-      return NextResponse.json({ error: "Produit requis" }, { status: 400 });
-    }
+  if (!payload?.product_id) {
+    return NextResponse.json({ error: "Produit requis" }, { status: 400 });
+  }
 
-    const { data: product, error: productError } = await supabase
+  // Prix, devise et revendeur viennent du produit : la fonction SQL
+  // market_create_group_order ignore tout prix envoyé par le navigateur.
+  const { data, error } = await supabase.rpc("market_create_group_order", {
+    p_product_id: payload.product_id,
+    p_min_participants: payload.min_participants ?? 1,
+    p_deadline: payload.deadline ?? null,
+  });
+  if (error) return payRpcErrorResponse(error);
+
+  const group = rpcRow<GroupOrderRow>(data);
+  if (!group) return payRpcErrorResponse(null);
+
+  try {
+    const { data: product } = await supabase
       .from("market_products")
-      .select("*, market_resellers(company_name)")
+      .select("name, market_resellers(company_name)")
       .eq("id", payload.product_id)
       .maybeSingle();
-    if (productError) throw productError;
-    if (!product) {
-      return NextResponse.json({ error: "Produit introuvable" }, { status: 404 });
-    }
-
-    const { data: group, error: groupError } = await supabase
-      .from("market_group_orders")
-      .insert({
-        product_id: product.id,
-        reseller_id: product.reseller_id,
-        creator_id: user.id,
-        min_participants: payload.min_participants ?? 1,
-        deadline: payload.deadline ?? new Date().toISOString().slice(0, 10),
-        unit_price: payload.unit_price ?? product.retail_price,
-        currency: payload.currency ?? product.currency,
-        status: "open",
-      })
-      .select()
-      .single();
-    if (groupError) throw groupError;
-
-    await supabase
-      .from("market_group_order_participants")
-      .insert({ group_order_id: group.id, user_id: user.id });
+    const reseller = product?.market_resellers as
+      | { company_name: string }
+      | { company_name: string }[]
+      | null
+      | undefined;
 
     return NextResponse.json({
       ...group,
-      product_name: product.name,
-      reseller_name: product.market_resellers?.company_name ?? "",
+      product_name: product?.name ?? "",
+      reseller_name:
+        (Array.isArray(reseller) ? reseller[0]?.company_name : reseller?.company_name) ?? "",
       participants: 1,
       joined: true,
     });

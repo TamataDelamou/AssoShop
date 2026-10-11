@@ -2,6 +2,7 @@ import { base44Client } from "@/lib/base44";
 import {
   CreateResellerApplicationPayload,
   Order,
+  OrderStatus,
   Product,
   ResellerApplication,
   ResellerBundle,
@@ -70,6 +71,18 @@ export const resellerService = {
     );
     if (!response.data) {
       throw new Error(MARKET_MESSAGES.SCAN_ERROR);
+    }
+    return response.data;
+  },
+
+  // Expédiée puis arrivée : étapes déclarées par le revendeur.
+  async advanceOrder(orderId: string, status: OrderStatus): Promise<Order> {
+    const response = await base44Client.post(
+      `/market/reseller/orders/${orderId}/advance`,
+      { status },
+    );
+    if (!response.data) {
+      throw new Error(MARKET_MESSAGES.ADVANCE_ERROR);
     }
     return response.data;
   },

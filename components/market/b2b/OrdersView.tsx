@@ -12,6 +12,7 @@ import { useCatalog } from "@/hooks/market/useCatalog";
 import { useGroupOrders } from "@/hooks/market/useGroupOrders";
 import { useOrders } from "@/hooks/market/useOrders";
 import { ordersService } from "@/services/market/orders";
+import { canCancelOrder } from "@/lib/market-orders";
 import {
   Card,
   CardContent,
@@ -105,7 +106,15 @@ function OrderTimeline({ current }: { current: number }) {
   );
 }
 
-function OrderCard({ order }: { order: Order }) {
+function OrderCard({
+  order,
+  cancelling,
+  onCancel,
+}: {
+  order: Order;
+  cancelling: boolean;
+  onCancel: (order: Order) => void;
+}) {
   const idx = statusIndex(order.status);
   return (
     <Card>
@@ -145,6 +154,17 @@ function OrderCard({ order }: { order: Order }) {
           {formatDateTime(order.created_at)}
         </p>
         {idx >= 0 && <OrderTimeline current={idx} />}
+        {canCancelOrder(order) && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            disabled={cancelling}
+            onClick={() => onCancel(order)}
+          >
+            {cancelling ? MARKET_LABELS.CANCELLING : MARKET_LABELS.CANCEL_ORDER}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -165,7 +185,22 @@ function GroupOrderStatusBadge({ status }: { status: GroupOrderStatus }) {
 }
 
 export function OrdersView() {
-  const { orders, loading, error } = useOrders();
+  const { orders, loading, error, refetch: refetchOrders } = useOrders();
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [orderError, setOrderError] = useState<string | null>(null);
+
+  const cancelOrder = async (order: Order) => {
+    setCancellingId(order.id);
+    setOrderError(null);
+    try {
+      await ordersService.cancelOrder(order.id);
+      await refetchOrders();
+    } catch (err) {
+      setOrderError((err as Error).message);
+    } finally {
+      setCancellingId(null);
+    }
+  };
   const {
     groupOrders,
     loading: groupLoading,
@@ -258,11 +293,22 @@ export function OrdersView() {
         ) : (
           <div className="grid gap-4 lg:grid-cols-2">
             {orders?.map((order) => (
-              <OrderCard key={order.id} order={order} />
+              <OrderCard
+                key={order.id}
+                order={order}
+                cancelling={cancellingId === order.id}
+                onCancel={cancelOrder}
+              />
             ))}
           </div>
         )}
       </section>
+
+      {orderError && (
+        <Alert variant="destructive" className="border-destructive/50">
+          <AlertDescription>{orderError}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Commandes groupées */}
       <section className="space-y-4">
@@ -394,12 +440,10 @@ export function OrdersView() {
               <Label className="mb-1 block text-xs text-muted-foreground">
                 {MARKET_LABELS.GROUP_PRICE}
               </Label>
-              <Input
-                type="number"
-                min={0}
-                value={unitPrice}
-                onChange={(e) => setUnitPrice(Number(e.target.value))}
-              />
+              <Input type="number" value={unitPrice} readOnly disabled />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {MARKET_LABELS.GROUP_PRICE_HINT}
+              </p>
             </div>
             {actionError && (
               <Alert variant="destructive" className="border-destructive/50">

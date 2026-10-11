@@ -46,6 +46,16 @@ export const base44Client = axios.create({
   },
 });
 
+// Corps de requête tel que le reçoit un adaptateur axios : chaîne JSON.
+function parseMockBody(data: unknown): unknown {
+  if (typeof data !== "string") return data;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return data;
+  }
+}
+
 // Mock interceptor pour le développement.
 // Désactivable via NEXT_PUBLIC_USE_REAL_API=1 pour tester le backend réel.
 const useMocks =
@@ -98,7 +108,9 @@ if (useMocks) {
       tasksMockAdapter(config) ??
       treasuryMockAdapter(config);
     if (adapter) {
-      config.adapter = adapter;
+      // axios sérialise le corps en JSON avant d'appeler l'adaptateur : on le
+      // redonne aux mocks sous forme d'objet, comme ils l'attendent.
+      config.adapter = (cfg) => adapter({ ...cfg, data: parseMockBody(cfg.data) });
     }
     return config;
   });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthedContext } from "@/lib/api/auth";
 import { parseAmount, payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
+import { parseTransferTarget } from "@/lib/pay-transfer";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
@@ -9,7 +10,8 @@ export async function POST(request: NextRequest) {
 
   const payload = (await request.json().catch(() => null)) as {
     from_wallet_id?: string;
-    to_member?: string;
+    to_member_id?: unknown;
+    to_user_id?: unknown;
     amount?: number;
   } | null;
 
@@ -18,11 +20,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
   }
 
-  // Contrôle du solde, débit et transaction dans la fonction SQL atomique
-  // pay_transfer (verrou de ligne : pas de double dépense).
+  // Le destinataire est un membre d'une organisation commune ou un
+  // identifiant utilisateur, jamais un libellé libre.
+  const target = parseTransferTarget(payload);
+  if (!target) {
+    return NextResponse.json({ error: "Destinataire requis" }, { status: 400 });
+  }
+
+  // Débit de l'émetteur et crédit du destinataire dans la fonction SQL
+  // atomique pay_transfer (deux portefeuilles verrouillés dans un ordre fixe).
   const { data, error } = await supabase.rpc("pay_transfer", {
     p_amount: amount,
-    p_to_member: payload?.to_member ?? "",
+    p_to_user_id: target.to_user_id,
+    p_to_member_id: target.to_member_id,
     p_from_wallet_id: payload?.from_wallet_id ?? null,
   });
   if (error) return payRpcErrorResponse(error);

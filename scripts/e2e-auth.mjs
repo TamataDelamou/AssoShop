@@ -2,10 +2,15 @@ import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const REF = "fpxgbykozzyybwhlltlo";
-const BASE_URL = "http://localhost:3100";
+// Prérequis : serveur lancé avec NEXT_PUBLIC_USE_REAL_API=1 et le même
+// PAY_WEBHOOK_SECRET que ce script (confirmation de la recharge).
+//   PAY_WEBHOOK_SECRET=... E2E_BASE_URL=http://localhost:3000 node scripts/e2e-auth.mjs
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3100";
 const EMAIL = "e2e.test@assoshop.local";
-const PASSWORD = "AssoShopE2E!2026";
+// Mot de passe aléatoire à chaque exécution : ce compte devient administrateur
+// de la plateforme pendant le test, il ne doit jamais avoir de secret connu.
+const PASSWORD = `E2e!${crypto.randomUUID()}`;
+const WEBHOOK_SECRET = process.env.PAY_WEBHOOK_SECRET;
 const PIN = "1234";
 
 function loadEnv() {
@@ -23,6 +28,7 @@ const env = loadEnv();
 const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const ANON = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY;
+const REF = new URL(SUPABASE_URL).hostname.split(".")[0];
 
 const admin = createClient(SUPABASE_URL, SERVICE, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -77,7 +83,28 @@ async function req(path, { method = "GET", cookie = "", body } = {}) {
   return { status: res.status, json };
 }
 
+async function webhook(body) {
+  const res = await fetch(BASE_URL + "/api/pay/topup/confirm", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${WEBHOOK_SECRET}`,
+    },
+    body: JSON.stringify(body),
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    /* réponse non JSON */
+  }
+  return { status: res.status, json };
+}
+
 async function main() {
+  if (!WEBHOOK_SECRET) {
+    throw new Error("PAY_WEBHOOK_SECRET requis (identique à celui du serveur).");
+  }
   console.log("1. Préparation utilisateur de test (service_role)");
   const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
   for (const u of list?.users ?? []) {
@@ -138,7 +165,26 @@ async function main() {
     cookie,
     body: { amount: 10000, provider: "Orange Money" },
   });
-  results.push(["POST /api/pay/topup (sans wallet_id)", r.status === 200 && r.json?.status === "confirmed", r.status]);
+  // Depuis la migration 0019 : la recharge est créée « pending », sans crédit.
+  const topupReference = r.json?.reference;
+  results.push(["POST /api/pay/topup (en attente)", r.status === 200 && r.json?.status === "pending", r.status]);
+
+  r = await req("/api/market/wallet", { cookie });
+  results.push(["GET /api/market/wallet (aucun crédit avant confirmation)", r.status === 200 && r.json?.balance === 0, r.status]);
+
+  r = await req("/api/pay/topup/confirm", {
+    method: "POST",
+    cookie,
+    body: { reference: topupReference },
+  });
+  results.push(["POST /api/pay/topup/confirm (session seule refusée)", r.status === 401, r.status]);
+
+  // Confirmation par le webhook de l'opérateur (secret serveur).
+  r = await webhook({ reference: topupReference });
+  results.push(["POST /api/pay/topup/confirm (webhook)", r.status === 200 && r.json?.status === "confirmed", r.status]);
+
+  r = await webhook({ reference: topupReference });
+  results.push(["POST /api/pay/topup/confirm (rejeu sans double crédit)", r.status === 200 && r.json?.status === "confirmed", r.status]);
 
   r = await req("/api/market/wallet", { cookie });
   results.push(["GET /api/market/wallet (solde unifié)", r.status === 200 && r.json?.balance === 9950, r.status]);
@@ -237,6 +283,10 @@ async function main() {
     body: { platform_name: "AssoShop" },
   });
   results.push(["POST /api/admin/config (audit)", r.status === 200 && !!r.json?.platform_name, r.status]);
+
+  // Nettoyage : le compte de test ne doit pas rester administrateur.
+  await admin.from("platform_admins").delete().eq("user_id", userId);
+  await admin.auth.admin.deleteUser(userId);
 
   console.log("\n=== Résultats E2E ===");
   let ok = true;
