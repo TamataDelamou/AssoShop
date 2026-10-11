@@ -337,6 +337,9 @@ export function InvestmentsView() {
                 onChange={(e) => setAmount(Number(e.target.value))}
               />
             </div>
+            <p className="text-xs text-muted-foreground">
+              {MARKET_LABELS.INVEST_DEBIT_NOTICE}
+            </p>
             {actionError && (
               <Alert variant="destructive" className="border-destructive/50">
                 <AlertDescription>{actionError}</AlertDescription>

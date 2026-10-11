@@ -20,8 +20,9 @@ export async function POST(
     return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
   }
 
-  // Contribution, montant collecté et verrouillage des règles (RG-M05) dans la
-  // fonction SQL market_invest : le projet n'est plus modifiable directement.
+  // Débit du portefeuille de l'investisseur, crédit du séquestre du projet,
+  // contribution, montant collecté et verrouillage des règles (RG-M05) dans
+  // la fonction SQL atomique market_invest.
   const { data, error } = await supabase.rpc("market_invest", {
     p_project_id: projectId,
     p_amount: amount,

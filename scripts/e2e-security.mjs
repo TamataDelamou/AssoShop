@@ -1,9 +1,11 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0021 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0022 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
 // marché payée et partagée, journal d'audit, puis stock, portefeuille
 // plateforme, transfert vers un destinataire réel, commandes groupées,
-// investissement, annulation et avancement logistique. Les données de test sont
-// supprimées à la fin (sauf audit_events, en ajout seul par conception).
+// investissement payé (séquestre), annulation, avancement logistique et
+// candidature revendeur décidée par un administrateur de la plateforme. Les
+// données de test sont supprimées à la fin (sauf audit_events, en ajout seul
+// par conception).
 //
 // Prérequis : serveur lancé avec NEXT_PUBLIC_USE_REAL_API=1 et le même
 // PAY_WEBHOOK_SECRET que ce script.
@@ -62,6 +64,7 @@ async function createUser(label) {
   const cookies = sessionCookies(signIn.session);
   return {
     id: data.user.id,
+    email,
     cookies,
     cookie: cookies.map((c) => `${c.name}=${c.value}`).join("; "),
     client: anon,
@@ -100,6 +103,16 @@ async function platformBalance() {
   return data ? Number(data.balance) : null;
 }
 
+async function escrowBalance(projectId) {
+  const { data } = await admin
+    .from("pay_wallets")
+    .select("balance")
+    .eq("type", "escrow")
+    .eq("project_id", projectId)
+    .maybeSingle();
+  return data ? Number(data.balance) : null;
+}
+
 async function balance(user) {
   const { json } = await api("/api/market/wallet", { user });
   return json?.balance ?? null;
@@ -107,7 +120,7 @@ async function balance(user) {
 
 async function main() {
   if (!WEBHOOK_SECRET) throw new Error("PAY_WEBHOOK_SECRET requis (identique à celui du serveur).");
-  const created = { users: [], orgId: null, projectId: null };
+  const created = { users: [], orgId: null, projectId: null, applicationId: null };
   const platformBefore = await platformBalance();
 
   try {
@@ -294,6 +307,24 @@ async function main() {
     check("transfert vers soi-même refusé (400)", r.status === 400, `statut ${r.status}`);
     r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_user_id: crypto.randomUUID(), amount: 100 } });
     check("destinataire inconnu refusé (404)", r.status === 404, `statut ${r.status}`);
+    const stranger = await createUser("tiers");
+    created.users.push(stranger.id);
+    const buyerBeforeStranger = await balance(buyer);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_user_id: stranger.id, amount: 100 } });
+    check(
+      "transfert par identifiant vers un compte sans organisation commune refusé (404), sans débit",
+      r.status === 404 && (await balance(buyer)) === buyerBeforeStranger && (await balance(stranger)) === 0,
+      `statut ${r.status}, émetteur ${await balance(buyer)}, tiers ${await balance(stranger)}`,
+    );
+    r = await api("/api/pay/transfer", { method: "POST", user: stranger, body: { to_user_id: buyer.id, amount: 100 } });
+    check("même refus dans l'autre sens (404)", r.status === 404, `statut ${r.status}`);
+    const sellerBeforeById = await balance(seller);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_user_id: seller.id, amount: 500 } });
+    check(
+      "transfert par identifiant vers un membre d'une organisation commune",
+      r.status === 200 && r.json?.type === "transfer" && (await balance(seller)) === sellerBeforeById + 500 && (await balance(buyer)) === buyerBeforeStranger - 500,
+      `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`,
+    );
     r = await api("/api/pay/transfer", { method: "POST", user: seller, body: { to_member_id: memberId, amount: 100 } });
     check("membre d'une organisation non commune refusé (404)", r.status === 404, `statut ${r.status}`);
     r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_member_id: sellerMember.id, amount: 100000000 } });
@@ -315,14 +346,102 @@ async function main() {
     check("modification directe d'un projet refusée (clé anon)", Boolean(forgedProject.error) || (forgedProject.data ?? []).length === 0, "acceptée !");
     const forgedRules = await seller.client.rpc("market_update_investment_rules", { p_project_id: created.projectId, p_profit_sharing_rules: "piraté" });
     check("règles de répartition réservées au créateur", forgedRules.error?.code === "PY006", forgedRules.error?.code ?? "acceptée !");
+    const investorBefore = await balance(seller);
+    r = await api(`/api/market/investments/${created.projectId}/invest`, { method: "POST", user: seller, body: { amount: investorBefore + 1 } });
+    check(
+      "investissement au-delà du solde refusé (400), sans débit ni séquestre",
+      r.status === 400 && (await balance(seller)) === investorBefore && (await escrowBalance(created.projectId)) === null,
+      `statut ${r.status}, solde ${await balance(seller)}, séquestre ${await escrowBalance(created.projectId)}`,
+    );
     r = await api(`/api/market/investments/${created.projectId}/invest`, { method: "POST", user: seller, body: { amount: 1000 } });
     check("investissement enregistré, règles verrouillées", r.status === 200 && r.json?.raised_amount === 1000 && r.json?.rules_locked === true && r.json?.my_contribution === 1000, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+    check("investisseur débité de 1 000", (await balance(seller)) === investorBefore - 1000, `solde ${await balance(seller)}, attendu ${investorBefore - 1000}`);
+    check("compte de séquestre du projet crédité de 1 000", (await escrowBalance(created.projectId)) === 1000, `séquestre ${await escrowBalance(created.projectId)}`);
+    const { data: contributionRow } = await admin
+      .from("market_investment_contributions")
+      .select("amount, transaction_id")
+      .eq("project_id", created.projectId)
+      .eq("user_id", seller.id)
+      .maybeSingle();
+    const { data: contributionTx } = await admin
+      .from("pay_transactions")
+      .select("type, status, amount, module")
+      .eq("id", contributionRow?.transaction_id ?? "00000000-0000-0000-0000-000000000000")
+      .maybeSingle();
+    check(
+      "la contribution référence son paiement",
+      contributionRow?.amount === 1000 && contributionTx?.type === "payment" && contributionTx?.status === "confirmed" && contributionTx?.amount === 1000 && contributionTx?.module === "market",
+      JSON.stringify(contributionRow),
+    );
+    const hiddenEscrow = await buyer.client.from("pay_wallets").select("id").eq("type", "escrow");
+    check("compte de séquestre invisible avec la clé anon (créateur compris)", (hiddenEscrow.data ?? []).length === 0, "visible !");
     const lockedRules = await buyer.client.rpc("market_update_investment_rules", { p_project_id: created.projectId, p_profit_sharing_rules: "Règles v2" });
     check("règles figées après le premier investissement", lockedRules.error?.code === "PY019", lockedRules.error?.code ?? "acceptée !");
 
+    console.log("\n9. Candidature revendeur (RG-M01)");
+    const candidate = await createUser("candidat");
+    const platformAdmin = await createUser("admin");
+    created.users.push(candidate.id, platformAdmin.id);
+    const { error: adminError } = await admin.from("platform_admins").insert({ user_id: platformAdmin.id, role: "admin" });
+    if (adminError) throw new Error(`platform_admins : ${adminError.message}`);
+    const resellerRows = async (userId) => {
+      const { data } = await admin.from("market_resellers").select("id, validated_at").eq("user_id", userId);
+      return data ?? [];
+    };
+
+    const forgedApplication = await candidate.client
+      .from("market_reseller_applications")
+      .insert({ user_id: candidate.id, company_name: "Faux", contact_name: "Faux", status: "approved" })
+      .select();
+    check("candidature « approved » écrite directement refusée (clé anon)", Boolean(forgedApplication.error), "acceptée !");
+
+    r = await api("/api/market/reseller/application", { method: "POST", user: candidate, body: { company_name: `Société E2E ${RUN}`, contact_name: "Candidat E2E", sector: "agriculture", country: "Guinée", city: "Conakry", status: "approved" } });
+    created.applicationId = r.json?.id ?? null;
+    check("candidature déposée en attente (statut client ignoré)", r.status === 200 && r.json?.status === "pending" && created.applicationId, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+
+    r = await api("/api/market/reseller/application/approve", { method: "POST", user: candidate });
+    check("l'ancienne route d'auto-approbation n'existe plus (404)", r.status === 404, `statut ${r.status}`);
+    const forgedStatus = await candidate.client.from("market_reseller_applications").update({ status: "approved" }).eq("user_id", candidate.id).select();
+    check("le candidat ne peut pas modifier son statut (clé anon)", Boolean(forgedStatus.error) || (forgedStatus.data ?? []).length === 0, "accepté !");
+    const forgedReseller = await candidate.client.from("market_resellers").insert({ user_id: candidate.id, company_name: "Auto-proclamé", validated_at: new Date().toISOString() }).select();
+    check("création directe d'un compte revendeur refusée (clé anon)", Boolean(forgedReseller.error), "acceptée !");
+    const forgedAdmin = await candidate.client.from("platform_admins").insert({ user_id: candidate.id, role: "admin" }).select();
+    check("inscription directe dans platform_admins refusée (clé anon)", Boolean(forgedAdmin.error), "acceptée !");
+    const forgedReview = await candidate.client.rpc("market_review_reseller_application", { p_application_id: created.applicationId, p_status: "approved" });
+    check("fonction de décision refusée au candidat (clé anon)", forgedReview.error?.code === "PY006", forgedReview.error?.code ?? "acceptée !");
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: candidate, body: { status: "approved" } });
+    check("route de décision refusée au candidat (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: buyer, body: { status: "approved" } });
+    check("route de décision refusée à un tiers (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", body: { status: "approved" } });
+    check("route de décision refusée sans session (401)", r.status === 401, `statut ${r.status}`);
+    r = await api("/api/market/reseller", { user: candidate });
+    check(
+      "toujours en attente et sans compte revendeur après ces tentatives",
+      r.json?.application?.status === "pending" && (await resellerRows(candidate.id)).length === 0,
+      `statut ${r.json?.application?.status}, ${(await resellerRows(candidate.id)).length} compte(s)`,
+    );
+
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: platformAdmin, body: { status: "pending" } });
+    check("décision autre qu'approuver ou refuser rejetée (400)", r.status === 400, `statut ${r.status}`);
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: platformAdmin, body: { status: "approved" } });
+    const reviewed = (r.json ?? []).find?.((x) => x.id === created.applicationId);
+    check("l'administrateur de la plateforme approuve la candidature", r.status === 200 && reviewed?.status === "approved", `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+    const approvedResellers = await resellerRows(candidate.id);
+    check("compte revendeur créé et validé", approvedResellers.length === 1 && Boolean(approvedResellers[0].validated_at), JSON.stringify(approvedResellers));
+    const auditAction = `review_reseller:approved:${created.applicationId}`;
+    const { data: auditRows } = await admin.from("admin_audit_logs").select("actor, action, module").eq("action", auditAction);
+    check(
+      "décision journalisée dans admin_audit_logs avec son auteur",
+      (auditRows ?? []).length === 1 && auditRows[0].actor === platformAdmin.email && auditRows[0].module === "market",
+      JSON.stringify(auditRows),
+    );
+    r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: platformAdmin, body: { status: "rejected" } });
+    check("une candidature approuvée ne se rejuge pas (409)", r.status === 409, `statut ${r.status}`);
+
     const expectedBalance = await balance(buyer);
 
-    console.log("\n9. Écrans (navigateur)");
+    console.log("\n10. Écrans (navigateur)");
     const browser = await chromium.launch();
     try {
       const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
@@ -352,8 +471,18 @@ async function main() {
       await browser.close();
     }
   } finally {
-    console.log("\n10. Suppression des données de test");
+    console.log("\n11. Suppression des données de test");
+    if (created.applicationId) {
+      // Journal de la décision de test et son message en attente pour le Control Plane.
+      const action = `review_reseller:approved:${created.applicationId}`;
+      const outbox = await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);
+      const logs = await admin.from("admin_audit_logs").delete().eq("action", action);
+      console.log(`  journal admin de test : ${logs.error || outbox.error ? `ÉCHEC ${(logs.error ?? outbox.error).message}` : "supprimé"}`);
+    }
     if (created.projectId) {
+      // Le séquestre de test bloque la suppression du projet : il part d'abord.
+      const escrow = await admin.from("pay_wallets").delete().eq("type", "escrow").eq("project_id", created.projectId);
+      console.log(`  séquestre du projet : ${escrow.error ? `ÉCHEC ${escrow.error.message}` : "supprimé"}`);
       const { error } = await admin.from("market_investment_projects").delete().eq("id", created.projectId);
       console.log(`  projet d'investissement : ${error ? `ÉCHEC ${error.message}` : "supprimé"}`);
     }

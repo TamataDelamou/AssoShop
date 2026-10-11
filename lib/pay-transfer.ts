@@ -1,5 +1,6 @@
-// Désignation du destinataire d'un transfert (migration 0021) : un membre
-// d'une organisation commune ou un identifiant utilisateur, jamais un libellé.
+// Désignation du destinataire d'un transfert (migrations 0021 et 0022) : un
+// membre d'une organisation commune, désigné par sa fiche membre ou par son
+// identifiant utilisateur, jamais un libellé.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

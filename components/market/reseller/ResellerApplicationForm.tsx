@@ -7,6 +7,7 @@ import {
   ResellerApplicationStatus,
 } from "@/types/modules/market";
 import { resellerService } from "@/services/market/reseller";
+import { DEMO_MODE } from "@/lib/base44";
 import {
   Card,
   CardContent,
@@ -135,7 +136,9 @@ export function ResellerApplicationForm({
             </Alert>
           )}
 
-          {application.status === ResellerApplicationStatus.PENDING && (
+          {/* RG-M01 : la validation appartient à un administrateur de la
+              plateforme ; la simulation n'existe qu'en démonstration. */}
+          {DEMO_MODE && application.status === ResellerApplicationStatus.PENDING && (
             <Button
               variant="outline"
               className="w-full border-white/10"
