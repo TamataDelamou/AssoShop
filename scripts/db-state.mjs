@@ -28,6 +28,7 @@ export const MIGRATION_MARKERS = {
   "0020_validate_wallet_balance.sql": [{ validatedConstraint: "pay_wallets_balance_non_negative" }],
   "0021_market_wallet_hardening.sql": [{ function: "pay_credit_platform" }, { function: "market_join_group_order" }, { column: ["market_investment_projects", "created_by"] }],
   "0022_reseller_transfer_investment.sql": [{ function: "market_review_reseller_application" }, { function: "pay_shares_organization" }, { column: ["pay_wallets", "project_id"] }, { noPolicy: ["market_reseller_applications", "market_apps_update"] }],
+  "0023_investment_escrow_settlement.sql": [{ function: "market_settle_due_investments" }, { function: "market_review_investment_profit" }, { table: "market_investment_distributions" }, { column: ["market_investment_projects", "settled_at"] }],
 };
 
 export function pgClient() {

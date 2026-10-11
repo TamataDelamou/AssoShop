@@ -280,10 +280,41 @@ export interface CreateServiceReviewPayload {
 
 // ---- Investissement communautaire (MKT-32 → MKT-35) ----
 
+// open : en collecte ; completed : objectif atteint, en attente de la date
+// limite ; funded : séquestre versé au porteur ; refunded : investisseurs
+// remboursés ; closed : clôturé sans fonds à dénouer.
 export enum InvestmentProjectStatus {
   OPEN = "open",
   CLOSED = "closed",
   COMPLETED = "completed",
+  FUNDED = "funded",
+  REFUNDED = "refunded",
+}
+
+export enum InvestmentDistributionStatus {
+  PENDING = "pending",
+  APPROVED = "approved",
+  REJECTED = "rejected",
+}
+
+// Part d'un investisseur dans la collecte, sans identité : seul
+// l'utilisateur courant est signalé.
+export interface InvestmentShare {
+  is_me: boolean;
+  amount: number;
+  percent: number;
+}
+
+// Bénéfice déclaré par le porteur, réparti au prorata des mises après
+// validation d'un administrateur de la plateforme.
+export interface InvestmentDistribution {
+  id: string;
+  amount: number;
+  distributed_amount: number | null;
+  status: InvestmentDistributionStatus;
+  declared_at: Date;
+  // Part reçue par l'utilisateur courant (0 s'il n'est pas investisseur).
+  my_share: number;
 }
 
 export interface InvestmentProject {
@@ -300,6 +331,16 @@ export interface InvestmentProject {
   rules_locked: boolean;
   status: InvestmentProjectStatus;
   my_contribution: number;
+  // Date limite de collecte : à l'échéance, versement au porteur si
+  // l'objectif est atteint, remboursement intégral sinon.
+  deadline: Date | null;
+  // L'utilisateur courant est le porteur du projet.
+  is_owner: boolean;
+  // Commission plateforme prélevée au versement (en %), affichée avant
+  // tout investissement (RG-P03).
+  commission_rate: number | null;
+  shares: InvestmentShare[];
+  distributions: InvestmentDistribution[];
   created_at: Date;
 }
 
@@ -310,8 +351,14 @@ export interface CreateInvestmentProjectPayload {
   target_amount: number;
   currency: string;
   profit_sharing_rules: string;
+  // AAAA-MM-JJ, strictement dans le futur.
+  deadline: string;
 }
 
 export interface InvestPayload {
+  amount: number;
+}
+
+export interface DeclareProfitPayload {
   amount: number;
 }

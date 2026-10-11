@@ -1,15 +1,16 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0022 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0023 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
 // marché payée et partagée, journal d'audit, puis stock, portefeuille
 // plateforme, transfert vers un destinataire réel, commandes groupées,
 // investissement payé (séquestre), annulation, avancement logistique et
-// candidature revendeur décidée par un administrateur de la plateforme. Les
+// candidature revendeur décidée par un administrateur de la plateforme, puis
+// dénouement des séquestres (remboursement, versement, bénéfices). Les
 // données de test sont supprimées à la fin (sauf audit_events, en ajout seul
 // par conception).
 //
-// Prérequis : serveur lancé avec NEXT_PUBLIC_USE_REAL_API=1 et le même
-// PAY_WEBHOOK_SECRET que ce script.
-//   PAY_WEBHOOK_SECRET=... node --env-file=.env.local scripts/e2e-security.mjs
+// Prérequis : serveur lancé avec NEXT_PUBLIC_USE_REAL_API=1 et les mêmes
+// PAY_WEBHOOK_SECRET et CRON_SECRET que ce script.
+//   PAY_WEBHOOK_SECRET=... CRON_SECRET=... node --env-file=.env.local scripts/e2e-security.mjs
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "@playwright/test";
 
@@ -18,6 +19,7 @@ const SCREENSHOT_DIR = process.env.E2E_SCREENSHOT_DIR ?? null;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const REF = new URL(SUPABASE_URL).hostname.split(".")[0];
 const WEBHOOK_SECRET = process.env.PAY_WEBHOOK_SECRET;
+const CRON_SECRET = process.env.CRON_SECRET;
 const PASSWORD = `E2e!${crypto.randomUUID()}`;
 const RUN = Date.now();
 
@@ -120,7 +122,8 @@ async function balance(user) {
 
 async function main() {
   if (!WEBHOOK_SECRET) throw new Error("PAY_WEBHOOK_SECRET requis (identique à celui du serveur).");
-  const created = { users: [], orgId: null, projectId: null, applicationId: null };
+  if (!CRON_SECRET) throw new Error("CRON_SECRET requis (identique à celui du serveur).");
+  const created = { users: [], orgId: null, projectId: null, projectIds: [], distributionIds: [], applicationId: null };
   const platformBefore = await platformBalance();
 
   try {
@@ -340,7 +343,12 @@ async function main() {
     check("participation : commande confirmée au minimum atteint", r.status === 200 && r.json?.status === "confirmed" && r.json?.participants === 2, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
 
     r = await api("/api/market/investments", { method: "POST", user: buyer, body: { name: `Projet E2E ${RUN}`, sector: "agriculture", target_amount: 5000, profit_sharing_rules: "Règles v1" } });
+    check("projet sans date limite refusé (400)", r.status === 400, `statut ${r.status}`);
+    r = await api("/api/market/investments", { method: "POST", user: buyer, body: { name: `Projet E2E ${RUN}`, sector: "agriculture", target_amount: 5000, profit_sharing_rules: "Règles v1", deadline: "2000-01-01" } });
+    check("projet à date limite passée refusé (400)", r.status === 400, `statut ${r.status}`);
+    r = await api("/api/market/investments", { method: "POST", user: buyer, body: { name: `Projet E2E ${RUN}`, sector: "agriculture", target_amount: 5000, profit_sharing_rules: "Règles v1", deadline: "2099-12-31" } });
     created.projectId = r.json?.id ?? null;
+    if (created.projectId) created.projectIds.push(created.projectId);
     check("projet d'investissement créé", r.status === 200 && created.projectId && r.json?.rules_locked === false, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
     const forgedProject = await seller.client.from("market_investment_projects").update({ raised_amount: 999999, profit_sharing_rules: "piraté" }).eq("id", created.projectId).select();
     check("modification directe d'un projet refusée (clé anon)", Boolean(forgedProject.error) || (forgedProject.data ?? []).length === 0, "acceptée !");
@@ -439,9 +447,185 @@ async function main() {
     r = await api(`/api/admin/resellers/${created.applicationId}/review`, { method: "POST", user: platformAdmin, body: { status: "rejected" } });
     check("une candidature approuvée ne se rejuge pas (409)", r.status === 409, `statut ${r.status}`);
 
+    console.log("\n10. Séquestre des investissements : dénouement tout ou rien");
+    const cron = { Authorization: `Bearer ${CRON_SECRET}` };
+    const settle = () => api("/api/cron/investments/settle", { method: "POST", headers: cron });
+    const expire = async (projectId) => {
+      const yesterday = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+      const { error } = await admin.from("market_investment_projects").update({ deadline: yesterday }).eq("id", projectId);
+      if (error) throw new Error(`échéance : ${error.message}`);
+    };
+    const projectOf = async (user, projectId) => {
+      const { json } = await api("/api/market/investments", { user });
+      return (json ?? []).find?.((p) => p.id === projectId) ?? null;
+    };
+
+    r = await api("/api/cron/investments/settle", { method: "POST" });
+    check("dénouement refusé sans secret (401)", r.status === 401, `statut ${r.status}`);
+    r = await api("/api/cron/investments/settle", { method: "POST", user: buyer });
+    check("dénouement refusé avec une simple session utilisateur (401)", r.status === 401, `statut ${r.status}`);
+    r = await api("/api/cron/investments/settle", { method: "POST", headers: { Authorization: "Bearer faux-secret" } });
+    check("dénouement refusé avec un mauvais secret (401)", r.status === 401, `statut ${r.status}`);
+    const forgedSettle = await buyer.client.rpc("market_settle_due_investments");
+    check("fonction de dénouement refusée à l'utilisateur (clé anon)", Boolean(forgedSettle.error), "acceptée !");
+
+    // 10.a Objectif non atteint (1 000 collectés sur 5 000) : remboursement.
+    r = await settle();
+    check(
+      "avant la date limite : rien n'est dénoué",
+      r.status === 200 && (await escrowBalance(created.projectId)) === 1000,
+      `statut ${r.status} ${JSON.stringify(r.json)}, séquestre ${await escrowBalance(created.projectId)}`,
+    );
+    await expire(created.projectId);
+    r = await api(`/api/market/investments/${created.projectId}/invest`, { method: "POST", user: seller, body: { amount: 100 } });
+    check("investissement refusé après la date limite (409)", r.status === 409, `statut ${r.status}`);
+    const sellerBeforeRefund = await balance(seller);
+    const platformBeforeRefund = await platformBalance();
+    r = await settle();
+    check("échéance passée, objectif non atteint : remboursement", r.status === 200 && r.json?.refunded === 1 && r.json?.released === 0, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    check(
+      "investisseur remboursé intégralement, sans commission",
+      (await balance(seller)) === sellerBeforeRefund + 1000 && (await escrowBalance(created.projectId)) === 0 && (await platformBalance()) === platformBeforeRefund,
+      `solde ${await balance(seller)}, attendu ${sellerBeforeRefund + 1000}, séquestre ${await escrowBalance(created.projectId)}`,
+    );
+    const refundedView = await projectOf(seller, created.projectId);
+    check("statut du projet : remboursé", refundedView?.status === "refunded", `statut ${refundedView?.status}`);
+    r = await settle();
+    check(
+      "second passage : aucun double remboursement",
+      r.status === 200 && r.json?.refunded === 0 && (await balance(seller)) === sellerBeforeRefund + 1000,
+      `${JSON.stringify(r.json)}, solde ${await balance(seller)}`,
+    );
+
+    // 10.b Objectif atteint (1 000 sur 1 000) : versement au porteur.
+    r = await api("/api/market/investments", { method: "POST", user: candidate, body: { name: `Projet financé E2E ${RUN}`, sector: "commerce", target_amount: 1000, profit_sharing_rules: "60 % investisseurs / 40 % porteur", deadline: "2099-12-31" } });
+    const fundedId = r.json?.id ?? null;
+    if (fundedId) created.projectIds.push(fundedId);
+    check("second projet créé par un autre porteur", r.status === 200 && fundedId, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+    await api(`/api/market/investments/${fundedId}/invest`, { method: "POST", user: buyer, body: { amount: 600 } });
+    r = await api(`/api/market/investments/${fundedId}/invest`, { method: "POST", user: seller, body: { amount: 400 } });
+    check("objectif atteint : collecte close", r.status === 200 && r.json?.status === "completed" && r.json?.raised_amount === 1000, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+
+    const investorView = await projectOf(buyer, fundedId);
+    const myShare = (investorView?.shares ?? []).find((x) => x.is_me);
+    check(
+      "écran investisseur : part de chacun, commission affichée, sans identité",
+      investorView?.is_owner === false &&
+        investorView?.commission_rate === 1 &&
+        investorView?.shares?.length === 2 &&
+        myShare?.amount === 600 && myShare?.percent === 60 &&
+        !("created_by" in investorView) &&
+        investorView.shares.every((x) => !("user_id" in x)),
+      JSON.stringify(investorView)?.slice(0, 300),
+    );
+    check("écran porteur : projet reconnu comme le sien", (await projectOf(candidate, fundedId))?.is_owner === true);
+
+    r = await settle();
+    check(
+      "objectif atteint mais échéance non passée : séquestre conservé",
+      r.status === 200 && r.json?.released === 0 && (await escrowBalance(fundedId)) === 1000,
+      `${JSON.stringify(r.json)}, séquestre ${await escrowBalance(fundedId)}`,
+    );
+    await expire(fundedId);
+    const { data: investRateRow } = await admin.from("admin_commissions").select("rate").eq("service", "Commission investissement").maybeSingle();
+    const investRate = Number(investRateRow?.rate);
+    const investCommission = Math.round((1000 * investRate) / 100);
+    check("service « Commission investissement » configuré (1 %)", investRate === 1, `taux ${investRateRow?.rate}`);
+    const platformBeforeRelease = await platformBalance();
+    r = await settle();
+    check("échéance passée, objectif atteint : versement", r.status === 200 && r.json?.released === 1 && r.json?.refunded === 0, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    check(
+      `porteur crédité de 1 000 moins la commission (${investCommission})`,
+      (await balance(candidate)) === 1000 - investCommission,
+      `solde ${await balance(candidate)}, attendu ${1000 - investCommission}`,
+    );
+    check(
+      "commission créditée à la plateforme, séquestre soldé",
+      (await platformBalance()) === platformBeforeRelease + investCommission && (await escrowBalance(fundedId)) === 0,
+      `plateforme ${await platformBalance()}, séquestre ${await escrowBalance(fundedId)}`,
+    );
+    check("statut du projet : financé", (await projectOf(buyer, fundedId))?.status === "funded");
+    r = await settle();
+    check(
+      "second passage : aucun double versement",
+      r.status === 200 && r.json?.released === 0 && (await balance(candidate)) === 1000 - investCommission && (await platformBalance()) === platformBeforeRelease + investCommission,
+      `${JSON.stringify(r.json)}, solde ${await balance(candidate)}`,
+    );
+
+    // 10.c Bénéfices : déclaration par le porteur, validation par un admin.
+    r = await api(`/api/market/investments/${fundedId}/profit`, { method: "POST", user: buyer, body: { amount: 500 } });
+    check("déclaration de bénéfice refusée à un investisseur (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/market/investments/${created.projectId}/profit`, { method: "POST", user: buyer, body: { amount: 500 } });
+    check("pas de bénéfice sur un projet remboursé (409)", r.status === 409, `statut ${r.status}`);
+    const candidateBeforeProfit = await balance(candidate);
+    const buyerBeforeProfit = await balance(buyer);
+    const sellerBeforeProfit = await balance(seller);
+    r = await api(`/api/market/investments/${fundedId}/profit`, { method: "POST", user: candidate, body: { amount: 500 } });
+    const distributionId = r.json?.id ?? null;
+    if (distributionId) created.distributionIds.push(distributionId);
+    check(
+      "le porteur déclare un bénéfice : en attente, sans mouvement de fonds",
+      r.status === 200 && r.json?.status === "pending" && (await balance(candidate)) === candidateBeforeProfit,
+      `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`,
+    );
+    r = await api(`/api/market/investments/${fundedId}/profit`, { method: "POST", user: candidate, body: { amount: 100 } });
+    check("une seule déclaration en attente (409)", r.status === 409, `statut ${r.status}`);
+
+    const forgedDistribution = await candidate.client.from("market_investment_distributions").update({ status: "approved" }).eq("id", distributionId).select();
+    check("validation par écriture directe refusée (clé anon)", Boolean(forgedDistribution.error) || (forgedDistribution.data ?? []).length === 0, "acceptée !");
+    const forgedProfitReview = await candidate.client.rpc("market_review_investment_profit", { p_distribution_id: distributionId, p_status: "approved" });
+    check("fonction de validation refusée au porteur (clé anon)", forgedProfitReview.error?.code === "PY006", forgedProfitReview.error?.code ?? "acceptée !");
+    r = await api(`/api/admin/investments/distributions/${distributionId}/review`, { method: "POST", user: candidate, body: { status: "approved" } });
+    check("route de validation refusée au porteur (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/admin/investments/distributions/${distributionId}/review`, { method: "POST", user: buyer, body: { status: "approved" } });
+    check("route de validation refusée à un investisseur (403)", r.status === 403, `statut ${r.status}`);
+    check("aucun mouvement après ces tentatives", (await balance(buyer)) === buyerBeforeProfit && (await balance(candidate)) === candidateBeforeProfit);
+
+    r = await api("/api/admin/bundle", { user: platformAdmin });
+    const pendingInBundle = (r.json?.investment_distributions ?? []).find((d) => d.id === distributionId);
+    const projectInBundle = (r.json?.investments ?? []).find((p) => p.id === fundedId);
+    check(
+      "back-office : déclaration à valider, séquestre et investisseurs du projet",
+      r.status === 200 && pendingInBundle?.status === "pending" && pendingInBundle?.amount === 500 &&
+        projectInBundle?.escrow_balance === 0 && projectInBundle?.investors_count === 2 && typeof r.json?.escrow_total === "number",
+      `statut ${r.status} ${JSON.stringify(pendingInBundle)} ${JSON.stringify(projectInBundle)}`,
+    );
+
+    r = await api(`/api/admin/investments/distributions/${distributionId}/review`, { method: "POST", user: platformAdmin, body: { status: "pending" } });
+    check("décision autre qu'approuver ou refuser rejetée (400)", r.status === 400, `statut ${r.status}`);
+    r = await api(`/api/admin/investments/distributions/${distributionId}/review`, { method: "POST", user: platformAdmin, body: { status: "approved" } });
+    check("l'administrateur de la plateforme valide la distribution", r.status === 200 && r.json?.status === "approved" && r.json?.distributed_amount === 500, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+    check(
+      "répartition au prorata des mises (300 et 200), porteur débité de 500",
+      (await balance(buyer)) === buyerBeforeProfit + 300 && (await balance(seller)) === sellerBeforeProfit + 200 && (await balance(candidate)) === candidateBeforeProfit - 500,
+      `acheteur +${(await balance(buyer)) - buyerBeforeProfit}, revendeur +${(await balance(seller)) - sellerBeforeProfit}, porteur ${(await balance(candidate)) - candidateBeforeProfit}`,
+    );
+    r = await api(`/api/admin/investments/distributions/${distributionId}/review`, { method: "POST", user: platformAdmin, body: { status: "approved" } });
+    check(
+      "seconde validation refusée (409) : aucune double distribution",
+      r.status === 409 && (await balance(buyer)) === buyerBeforeProfit + 300 && (await balance(candidate)) === candidateBeforeProfit - 500,
+      `statut ${r.status}, acheteur +${(await balance(buyer)) - buyerBeforeProfit}`,
+    );
+    const profitView = await projectOf(buyer, fundedId);
+    check(
+      "écran investisseur : bénéfice distribué et part reçue",
+      profitView?.distributions?.[0]?.status === "approved" && profitView?.distributions?.[0]?.my_share === 300,
+      JSON.stringify(profitView?.distributions),
+    );
+
+    const { data: investmentEvents } = await admin.from("audit_events").select("event_type, amount").in("entity_id", [created.projectId, fundedId, distributionId]);
+    const investmentTypes = (investmentEvents ?? []).map((e) => e.event_type);
+    check(
+      "journal d'audit : remboursement, versement et distribution",
+      ["investment.refunded", "investment.released", "investment.profit_distributed"].every((t) => investmentTypes.includes(t)) && investmentTypes.length === 3,
+      JSON.stringify(investmentEvents),
+    );
+    const { data: profitLogs } = await admin.from("admin_audit_logs").select("actor").eq("action", `review_investment_profit:approved:${distributionId}`);
+    check("décision journalisée dans admin_audit_logs avec son auteur", (profitLogs ?? []).length === 1 && profitLogs[0].actor === platformAdmin.email, JSON.stringify(profitLogs));
+
     const expectedBalance = await balance(buyer);
 
-    console.log("\n10. Écrans (navigateur)");
+    console.log("\n11. Écrans (navigateur)");
     const browser = await chromium.launch();
     try {
       const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
@@ -471,7 +655,21 @@ async function main() {
       await browser.close();
     }
   } finally {
-    console.log("\n11. Suppression des données de test");
+    console.log("\n12. Suppression des données de test");
+    for (const id of created.distributionIds) {
+      const action = `review_investment_profit:approved:${id}`;
+      const outbox = await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);
+      const logs = await admin.from("admin_audit_logs").delete().eq("action", action);
+      console.log(`  journal admin de la distribution : ${logs.error || outbox.error ? `ÉCHEC ${(logs.error ?? outbox.error).message}` : "supprimé"}`);
+    }
+    for (const id of created.projectIds.filter((p) => p !== created.projectId)) {
+      // Déclarations (et parts), puis séquestre, puis projet.
+      const distributions = await admin.from("market_investment_distributions").delete().eq("project_id", id);
+      const escrow = await admin.from("pay_wallets").delete().eq("type", "escrow").eq("project_id", id);
+      const project = await admin.from("market_investment_projects").delete().eq("id", id);
+      const failure = distributions.error ?? escrow.error ?? project.error;
+      console.log(`  projet financé de test : ${failure ? `ÉCHEC ${failure.message}` : "supprimé"}`);
+    }
     if (created.applicationId) {
       // Journal de la décision de test et son message en attente pour le Control Plane.
       const action = `review_reseller:approved:${created.applicationId}`;

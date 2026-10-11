@@ -87,6 +87,8 @@ Algorithme selon la clé fournie : HS256 (secret partagé ≥ 32 caractères) ou
         "financial_groups_active": 0,
         "loans_active_count": 0, "loans_outstanding_amount": 0,
         "pay_transactions_24h_count": 0, "pay_transactions_24h_volume": 0, "pay_commissions_24h": 0,
+        "platform_wallet_balance": 0,
+        "investment_escrow_balance": 0, "investment_distributions_pending": 0,
         "market_orders_24h_count": 0, "market_gmv_24h": 0,
         "kyc_pending": 0, "disputes_open": 0,
         "audit_events_24h": 0,
@@ -179,6 +181,8 @@ CONTROL_PLANE_MTLS_HEADER=x-client-cert-fingerprint                  # optionnel
 CONTROL_PLANE_MTLS_FINGERPRINTS=ab12…,cd34…                          # optionnel
 CRON_SECRET=<aléatoire ≥ 32 caractères>
 ```
+
+Le même passage dénoue les séquestres d'investissement échus (migration `0023`, idempotent) ; son compte rendu figure sous la clé `investments` de la réponse. La route `GET`/`POST` `/api/cron/investments/settle` (même `CRON_SECRET`) fait ce dénouement seule, sans exiger `CONTROL_PLANE_ENABLED=1`.
 
 Planification : appeler `GET /api/control-plane/push` avec `Authorization: Bearer $CRON_SECRET` toutes les 15 minutes (cron Vercel, Supabase pg_cron + pg_net, ou planificateur du Kernel avec scope `control-plane:push`).
 

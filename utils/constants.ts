@@ -33,6 +33,7 @@ import {
 import {
   DeliveryMethod,
   GroupOrderStatus,
+  InvestmentDistributionStatus,
   InvestmentProjectStatus,
   OrderStatus,
   ResellerApplicationStatus,
@@ -1593,6 +1594,21 @@ export const MARKET_LABELS = {
   INVEST: "Investir",
   INVEST_DEBIT_NOTICE:
     "Le montant est débité de votre portefeuille AssoShop Pay et placé sur le compte de séquestre du projet.",
+  INVEST_ALL_OR_NOTHING:
+    "Tout ou rien : si l'objectif n'est pas atteint à la date limite, vous êtes remboursé intégralement.",
+  INVESTMENT_DEADLINE: "Date limite de collecte",
+  COMMISSION_NOTICE: "Commission plateforme prélevée au versement",
+  MY_PROJECT: "Mon projet",
+  INVESTOR_SHARES: "Part de chaque investisseur",
+  INVESTOR: "Investisseur",
+  INVESTOR_ME: "Vous",
+  NO_INVESTORS: "Aucun investisseur pour le moment.",
+  DECLARE_PROFIT: "Déclarer un bénéfice",
+  DECLARE_PROFIT_HINT:
+    "Montant à distribuer aux investisseurs, au prorata des mises. Il sera débité de votre portefeuille après validation par un administrateur de la plateforme.",
+  PROFIT_AMOUNT: "Montant à distribuer",
+  DISTRIBUTIONS: "Bénéfices",
+  MY_SHARE: "Ma part",
   PROJECT_NAME: "Nom du projet",
   AMOUNT: "Montant",
   CLOSED: "Clôturé",
@@ -1651,9 +1667,20 @@ export const INVESTMENT_PROJECT_STATUS_LABELS: Record<
   InvestmentProjectStatus,
   string
 > = {
-  [InvestmentProjectStatus.OPEN]: "Ouvert",
+  [InvestmentProjectStatus.OPEN]: "En collecte",
   [InvestmentProjectStatus.CLOSED]: "Clôturé",
-  [InvestmentProjectStatus.COMPLETED]: "Terminé",
+  [InvestmentProjectStatus.COMPLETED]: "Objectif atteint",
+  [InvestmentProjectStatus.FUNDED]: "Financé",
+  [InvestmentProjectStatus.REFUNDED]: "Remboursé",
+};
+
+export const INVESTMENT_DISTRIBUTION_STATUS_LABELS: Record<
+  InvestmentDistributionStatus,
+  string
+> = {
+  [InvestmentDistributionStatus.PENDING]: "En attente de validation",
+  [InvestmentDistributionStatus.APPROVED]: "Distribué",
+  [InvestmentDistributionStatus.REJECTED]: "Refusé",
 };
 
 export const MARKET_MESSAGES = {
@@ -1678,6 +1705,7 @@ export const MARKET_MESSAGES = {
   PROJECTS_LOAD_ERROR: "Impossible de charger les projets d'investissement.",
   PROJECT_CREATE_ERROR: "Impossible de créer le projet d'investissement.",
   INVEST_ERROR: "Impossible d'investir dans ce projet.",
+  DECLARE_PROFIT_ERROR: "Impossible de déclarer ce bénéfice.",
 };
 
 // ============================================
@@ -1965,6 +1993,16 @@ export const ADMIN_LABELS = {
   TAB_MODERATION: "Modération",
   TAB_INVESTMENTS: "Investissements",
   TAB_COMMISSIONS: "Commissions & frais",
+  ESCROW_TOTAL: "Total bloqué en séquestre",
+  ESCROW_TOTAL_HINT:
+    "Fonds des investisseurs en attente de la date limite des projets.",
+  ESCROW_BALANCE: "Séquestre",
+  INVESTORS: "investisseur(s)",
+  PROJECT_DEADLINE: "Échéance",
+  PROFIT_DECLARATIONS: "Bénéfices déclarés à valider",
+  NO_PROFIT_DECLARATIONS: "Aucune déclaration de bénéfice.",
+  PROFIT_TO_DISTRIBUTE: "à distribuer",
+  PROFIT_DISTRIBUTED: "distribué",
   PLATFORM_WALLET: "Portefeuille plateforme",
   PLATFORM_WALLET_HINT:
     "Commissions encaissées : recharges, retraits et ventes du marché.",
@@ -2153,6 +2191,9 @@ export const AUDIT_EVENT_LABELS: Record<AuditEventType, string> = {
   [AuditEventType.PAY_WITHDRAWAL]: "Retrait",
   [AuditEventType.PAY_TRANSFER]: "Transfert",
   [AuditEventType.MARKET_ORDER_PAID]: "Commande marché payée",
+  [AuditEventType.INVESTMENT_RELEASED]: "Séquestre versé au porteur du projet",
+  [AuditEventType.INVESTMENT_REFUNDED]: "Investisseurs remboursés",
+  [AuditEventType.INVESTMENT_PROFIT_DISTRIBUTED]: "Bénéfices distribués",
   [AuditEventType.CONTRIBUTION_VALIDATED]: "Cotisation validée",
   [AuditEventType.CONTRIBUTION_REJECTED]: "Cotisation rejetée",
   [AuditEventType.LOAN_APPROVED]: "Prêt approuvé",
@@ -2176,7 +2217,7 @@ export const AUDIT_EVENT_LABELS: Record<AuditEventType, string> = {
 
 // Préfixes des événements personnels (portefeuille, achats marché) : sans
 // organisation, ils ne figurent pas dans le journal d'une organisation.
-export const AUDIT_PERSONAL_EVENT_PREFIXES = ["pay.", "market."];
+export const AUDIT_PERSONAL_EVENT_PREFIXES = ["pay.", "market.", "investment."];
 
 // Types proposés dans le filtre de l'écran organisation.
 export const AUDIT_ORG_EVENT_TYPES: AuditEventType[] = Object.values(

@@ -34,8 +34,9 @@ function readMigration(name: string): string {
 }
 
 const MIGRATION = readMigration("0018_activity_audit.sql");
-// 0019 redéfinit la contrainte event_type : c'est elle qui fait foi.
 const MIGRATION_0019 = readMigration("0019_market_topup_integrity.sql");
+// 0023 redéfinit la contrainte event_type (après 0019) : c'est elle qui fait foi.
+const MIGRATION_0023 = readMigration("0023_investment_escrow_settlement.sql");
 
 function eventTypesIn(sql: string): string[] {
   const match = /check \(event_type in \(([\s\S]*?)\)\)/.exec(sql);
@@ -45,7 +46,7 @@ function eventTypesIn(sql: string): string[] {
 
 // Liste des event_type autorisés par la contrainte CHECK en vigueur.
 function migrationEventTypes(): string[] {
-  return eventTypesIn(MIGRATION_0019);
+  return eventTypesIn(MIGRATION_0023);
 }
 
 function row(overrides: Partial<AuditEventRow> = {}): AuditEventRow {
@@ -77,6 +78,11 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
     for (const type of eventTypesIn(MIGRATION)) expect(current).toContain(type);
   });
 
+  it("ne retire aucun event_type déclaré par 0019", () => {
+    const current = migrationEventTypes();
+    for (const type of eventTypesIn(MIGRATION_0019)) expect(current).toContain(type);
+  });
+
   it("ne contient aucun doublon dans la migration", () => {
     const types = migrationEventTypes();
     expect(new Set(types).size).toBe(types.length);
@@ -87,7 +93,8 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
     // ('pay.' || new.type) utilisés dans les fonctions de trigger.
     const body =
       MIGRATION.slice(MIGRATION.indexOf("-- 3. TRIGGERS MÉTIER")) +
-      MIGRATION_0019.slice(MIGRATION_0019.indexOf("-- Commande marché payée."));
+      MIGRATION_0019.slice(MIGRATION_0019.indexOf("-- Commande marché payée.")) +
+      MIGRATION_0023.slice(MIGRATION_0023.indexOf("-- 4. DÉNOUEMENT DU SÉQUESTRE"));
     const declared = Object.values(AuditEventType) as string[];
     const literals = Array.from(
       body.matchAll(/'([a-z_]+\.[a-z_]+)'/g),
@@ -95,6 +102,9 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
     );
     expect(literals).toContain("market.order_paid");
     expect(literals).toContain("pay.topup_confirmed");
+    expect(literals).toContain("investment.released");
+    expect(literals).toContain("investment.refunded");
+    expect(literals).toContain("investment.profit_distributed");
     for (const literal of literals) expect(declared).toContain(literal);
 
     const prefixes = Array.from(body.matchAll(/'([a-z_]+\.)' \|\|/g), (m) => m[1]);
@@ -118,10 +128,14 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
     expect(AUDIT_ORG_EVENT_TYPES).not.toContain(AuditEventType.PAY_TOPUP);
     expect(AUDIT_ORG_EVENT_TYPES).toContain(AuditEventType.MEMBER_ROLE_CHANGED);
     expect(AUDIT_ORG_EVENT_TYPES).not.toContain(AuditEventType.MARKET_ORDER_PAID);
+    expect(AUDIT_ORG_EVENT_TYPES).not.toContain(AuditEventType.INVESTMENT_RELEASED);
     const personal = Object.values(AuditEventType).filter(
-      (type) => type.startsWith("pay.") || type.startsWith("market."),
+      (type) =>
+        type.startsWith("pay.") ||
+        type.startsWith("market.") ||
+        type.startsWith("investment."),
     );
-    expect(personal).toHaveLength(6);
+    expect(personal).toHaveLength(9);
     expect(AUDIT_ORG_EVENT_TYPES).toHaveLength(
       Object.values(AuditEventType).length - personal.length,
     );

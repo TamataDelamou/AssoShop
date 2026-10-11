@@ -14,6 +14,12 @@ declareOffline({
 function parseProjects(data: InvestmentProject[]): InvestmentProject[] {
   return data.map((p) => ({
     ...p,
+    deadline: p.deadline ? new Date(p.deadline) : null,
+    shares: p.shares ?? [],
+    distributions: (p.distributions ?? []).map((d) => ({
+      ...d,
+      declared_at: new Date(d.declared_at),
+    })),
     created_at: new Date(p.created_at),
   }));
 }

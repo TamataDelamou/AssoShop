@@ -55,6 +55,11 @@ function parseBundle(data: AdminBundle): AdminBundle {
       reported_at: new Date(m.reported_at),
     })),
     investments: data.investments,
+    investment_distributions: (data.investment_distributions ?? []).map((d) => ({
+      ...d,
+      declared_at: new Date(d.declared_at),
+    })),
+    escrow_total: data.escrow_total ?? 0,
     commissions: data.commissions,
     platform_wallet: data.platform_wallet ?? null,
     plans: data.plans,
