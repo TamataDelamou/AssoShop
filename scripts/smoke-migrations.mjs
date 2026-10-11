@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0021, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0022, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -51,6 +51,15 @@ async function balanceOf(client, userId) {
     client,
     "select balance from public.pay_wallets where user_id = $1 and type = 'personal'",
     [userId],
+  );
+  return row ? Number(row.balance) : null;
+}
+
+async function escrowBalance(client, projectId) {
+  const row = await one(
+    client,
+    "select balance from public.pay_wallets where project_id = $1 and type = 'escrow'",
+    [projectId],
   );
   return row ? Number(row.balance) : null;
 }
@@ -500,6 +509,53 @@ export async function runSmokeTests(client) {
   );
   check("membre d'une organisation non commune refusé", err?.code === "PY014", err ? err.code : "accepté !");
 
+  // 0022 : par identifiant utilisateur, uniquement vers une organisation commune.
+  const senderBeforeRefusal = await balanceOf(client, buyer);
+  const sellerBeforeRefusal = await balanceOf(client, seller);
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_transfer(100, $1::uuid)", [seller]),
+    ),
+  );
+  check(
+    "transfert par identifiant vers un compte sans organisation commune refusé, sans débit",
+    err?.code === "PY014" &&
+      (await balanceOf(client, buyer)) === senderBeforeRefusal &&
+      (await balanceOf(client, seller)) === sellerBeforeRefusal,
+    err ? err.code : "accepté !",
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", seller, () =>
+      client.query("select public.pay_transfer(100, $1::uuid)", [buyer]),
+    ),
+  );
+  check("même refus dans l'autre sens (émetteur sans organisation commune)", err?.code === "PY014", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () =>
+      client.query("select public.pay_shares_organization($1, $2)", [buyer, seller]),
+    ),
+  );
+  check("pay_shares_organization non appelable par un utilisateur", err?.code === "42501", err ? err.code : "acceptée !");
+
+  // Le même compte, une fois membre de l'organisation de l'émetteur, est accepté.
+  await client.query(
+    "insert into public.members (organization_id, user_id, name, status, role) values ($1, $2, 'Revendeur membre (test)', 'active', 'member')",
+    [orgId, seller],
+  );
+  const sharedTransfer = await as(client, "authenticated", buyer, () =>
+    one(client, "select * from public.pay_transfer(20, $1::uuid)", [seller]),
+  );
+  check(
+    "transfert par identifiant accepté une fois l'organisation commune",
+    sharedTransfer.type === "transfer" &&
+      sharedTransfer.counterparty === "Revendeur membre (test)" &&
+      (await balanceOf(client, seller)) === sellerBeforeRefusal + 20 &&
+      (await balanceOf(client, buyer)) === senderBeforeRefusal - 20,
+    `émetteur ${await balanceOf(client, buyer)}, destinataire ${await balanceOf(client, seller)}`,
+  );
+
   err = await expectError(client, () =>
     as(client, "authenticated", buyer, () =>
       client.query("select public.pay_transfer(100, $1::uuid)", [buyer]),
@@ -580,10 +636,76 @@ export async function runSmokeTests(client) {
   );
   check("règles modifiables par le seul créateur", err?.code === "PY006", err ? err.code : "accepté !");
 
-  const invested = await as(client, "authenticated", outsider, () =>
-    one(client, "select * from public.market_invest($1, 1000)", [project.id]),
+  // 0022 : la contribution est payée (portefeuille débité, séquestre crédité).
+  const investorBefore = await balanceOf(client, outsider);
+  err = await expectError(client, () =>
+    as(client, "authenticated", outsider, () =>
+      client.query("select public.market_invest($1, $2)", [project.id, investorBefore + 1]),
+    ),
   );
-  check("investissement enregistré, règles verrouillées (RG-M05)", Number(invested.raised_amount) === 1000 && invested.rules_locked === true);
+  const untouched = await one(client, "select raised_amount, rules_locked from public.market_investment_projects where id = $1", [project.id]);
+  check(
+    "investissement au-delà du solde refusé, sans contribution ni débit",
+    err?.code === "PY003" &&
+      (await balanceOf(client, outsider)) === investorBefore &&
+      Number(untouched.raised_amount) === 0 &&
+      untouched.rules_locked === false &&
+      (await escrowBalance(client, project.id)) === null,
+    err ? err.code : "accepté !",
+  );
+
+  const invested = await as(client, "authenticated", outsider, () =>
+    one(client, "select * from public.market_invest($1, 300)", [project.id]),
+  );
+  check("investissement enregistré, règles verrouillées (RG-M05)", Number(invested.raised_amount) === 300 && invested.rules_locked === true);
+  check(
+    "investisseur débité du montant investi",
+    (await balanceOf(client, outsider)) === investorBefore - 300,
+    `solde ${await balanceOf(client, outsider)}, attendu ${investorBefore - 300}`,
+  );
+  check(
+    "compte de séquestre du projet crédité du même montant",
+    (await escrowBalance(client, project.id)) === 300,
+    `séquestre ${await escrowBalance(client, project.id)}`,
+  );
+  const contribution = await one(
+    client,
+    `select c.amount, t.type, t.status, t.amount as paid, t.module, t.user_id
+     from public.market_investment_contributions c
+     left join public.pay_transactions t on t.id = c.transaction_id
+     where c.project_id = $1 and c.user_id = $2`,
+    [project.id, outsider],
+  );
+  check(
+    "la contribution référence son paiement (pay_transactions)",
+    Number(contribution?.amount) === 300 &&
+      contribution?.type === "payment" &&
+      contribution?.status === "confirmed" &&
+      Number(contribution?.paid) === 300 &&
+      contribution?.module === "market" &&
+      contribution?.user_id === outsider,
+    JSON.stringify(contribution),
+  );
+
+  await as(client, "authenticated", buyer, () =>
+    client.query("select public.market_invest($1, 10)", [project.id]),
+  );
+  const projectNow = await one(client, "select raised_amount from public.market_investment_projects where id = $1", [project.id]);
+  check(
+    "le séquestre égale le montant collecté après deux investisseurs",
+    (await escrowBalance(client, project.id)) === 310 && Number(projectNow.raised_amount) === 310,
+    `séquestre ${await escrowBalance(client, project.id)}, collecté ${projectNow.raised_amount}`,
+  );
+
+  const escrowVisible = await as(client, "authenticated", buyer, () =>
+    one(client, "select count(*)::int as n from public.pay_wallets where type = 'escrow'"),
+  );
+  check("compte de séquestre invisible pour un utilisateur (créateur compris)", escrowVisible.n === 0, `${escrowVisible.n} ligne(s) visibles`);
+
+  err = await expectError(client, () =>
+    client.query("delete from public.market_investment_projects where id = $1", [project.id]),
+  );
+  check("projet non supprimable tant que son séquestre existe", err?.code === "23503", err ? err.code : "supprimé !");
 
   err = await expectError(client, () =>
     as(client, "authenticated", buyer, () =>
@@ -601,6 +723,133 @@ export async function runSmokeTests(client) {
     ),
   );
   check("écriture directe du suivi de retrait refusée", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  // ---- 11. Candidature revendeur (0022, RG-M01) ----
+  const candidate = await createUser(client, "candidat");
+  const platformAdmin = await createUser(client, "admin");
+  await client.query("insert into public.platform_admins (user_id, role) values ($1, 'admin')", [platformAdmin]);
+  const SUBMIT = "select * from public.market_submit_reseller_application('Société de test', 'Contact de test', 'CNI-TEST', 'agriculture', 'Guinée', 'Conakry')";
+  const REVIEW = "select * from public.market_review_reseller_application($1, $2)";
+  const resellerCount = async (userId) =>
+    (await one(client, "select count(*)::int as n from public.market_resellers where user_id = $1", [userId])).n;
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () =>
+      client.query(
+        "insert into public.market_reseller_applications (user_id, company_name, contact_name, status) values ($1, 'Faux', 'Faux', 'approved')",
+        [candidate],
+      ),
+    ),
+  );
+  check("INSERT direct d'une candidature (déjà « approved ») refusé", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  const application = await as(client, "authenticated", candidate, () => one(client, SUBMIT));
+  check("candidature déposée en attente", application.status === "pending" && application.user_id === candidate, `statut ${application.status}`);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () =>
+      client.query("update public.market_reseller_applications set status = 'approved' where user_id = $1", [candidate]),
+    ),
+  );
+  check("le candidat ne peut pas modifier le statut de sa candidature", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () =>
+      client.query(
+        "insert into public.market_resellers (user_id, company_name, validated_at) values ($1, 'Auto-proclamé', now())",
+        [candidate],
+      ),
+    ),
+  );
+  check("INSERT direct dans market_resellers refusé", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () =>
+      client.query("insert into public.platform_admins (user_id, role) values ($1, 'admin')", [candidate]),
+    ),
+  );
+  check("un utilisateur ne peut pas s'inscrire administrateur de la plateforme", err?.code === "42501", err ? `${err.code} ${err.message}` : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () => client.query(REVIEW, [application.id, "approved"])),
+  );
+  check("le candidat ne peut pas approuver sa candidature", err?.code === "PY006", err ? err.code : "accepté !");
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query(REVIEW, [application.id, "approved"])),
+  );
+  check("un tiers non administrateur ne peut pas approuver", err?.code === "PY006", err ? err.code : "accepté !");
+  check("aucun compte revendeur créé par ces tentatives", (await resellerCount(candidate)) === 0);
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", platformAdmin, () => client.query(REVIEW, [application.id, "pending"])),
+  );
+  check("décision autre qu'approuver ou refuser rejetée", err?.code === "PY009", err ? err.code : "acceptée !");
+
+  const ownApplication = await as(client, "authenticated", platformAdmin, () => one(client, SUBMIT));
+  err = await expectError(client, () =>
+    as(client, "authenticated", platformAdmin, () => client.query(REVIEW, [ownApplication.id, "approved"])),
+  );
+  check(
+    "un administrateur ne peut pas approuver sa propre candidature",
+    err?.code === "PY006" && (await resellerCount(platformAdmin)) === 0,
+    err ? err.code : "accepté !",
+  );
+
+  const rejected = await as(client, "authenticated", platformAdmin, () =>
+    one(client, REVIEW, [application.id, "rejected"]),
+  );
+  check(
+    "refus par un administrateur : aucun compte revendeur",
+    rejected.status === "rejected" && rejected.reviewed_at !== null && (await resellerCount(candidate)) === 0,
+    `statut ${rejected.status}`,
+  );
+
+  const resubmitted = await as(client, "authenticated", candidate, () => one(client, SUBMIT));
+  check("une candidature refusée peut être redéposée (en attente)", resubmitted.status === "pending" && resubmitted.id === application.id);
+
+  const approved = await as(client, "authenticated", platformAdmin, () =>
+    one(client, REVIEW, [application.id, "approved"]),
+  );
+  const createdReseller = await one(
+    client,
+    `select r.id, r.validated_at, r.company_name,
+            (select count(*)::int from public.market_reseller_settings s where s.reseller_id = r.id) as settings
+     from public.market_resellers r where r.user_id = $1`,
+    [candidate],
+  );
+  check(
+    "approbation par un administrateur : compte revendeur validé et paramètres créés",
+    approved.status === "approved" &&
+      Boolean(createdReseller?.validated_at) &&
+      createdReseller?.company_name === "Société de test" &&
+      createdReseller?.settings === 1,
+    JSON.stringify(createdReseller),
+  );
+
+  const adminEmail = (await one(client, "select email from auth.users where id = $1", [platformAdmin])).email;
+  const auditRows = (
+    await client.query(
+      "select actor, action, module from public.admin_audit_logs where action in ($1, $2)",
+      [`review_reseller:rejected:${application.id}`, `review_reseller:approved:${application.id}`],
+    )
+  ).rows;
+  check(
+    "les deux décisions sont journalisées dans admin_audit_logs, avec leur auteur",
+    auditRows.length === 2 &&
+      new Set(auditRows.map((r) => r.action)).size === 2 &&
+      auditRows.every((r) => r.actor === adminEmail && r.module === "market"),
+    JSON.stringify(auditRows),
+  );
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", platformAdmin, () => client.query(REVIEW, [application.id, "rejected"])),
+  );
+  check("une candidature approuvée ne se rejuge pas", err?.code === "PY019", err ? err.code : "accepté !");
+  err = await expectError(client, () =>
+    as(client, "authenticated", candidate, () => client.query(SUBMIT)),
+  );
+  check("une candidature approuvée ne se redépose pas", err?.code === "PY019", err ? err.code : "accepté !");
 
   const metrics2 = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
   check(

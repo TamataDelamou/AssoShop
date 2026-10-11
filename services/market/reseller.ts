@@ -30,6 +30,9 @@ export const resellerService = {
     return response.data;
   },
 
+  // Démonstration uniquement (mocks). Sur le backend réel, la décision
+  // appartient à un administrateur de la plateforme (RG-M01) : cette route
+  // n'existe pas.
   async approveApplication(): Promise<ResellerApplication> {
     const response = await base44Client.post(
       "/market/reseller/application/approve",

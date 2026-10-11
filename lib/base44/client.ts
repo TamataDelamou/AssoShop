@@ -62,6 +62,9 @@ const useMocks =
   process.env.NODE_ENV === "development" &&
   process.env.NEXT_PUBLIC_USE_REAL_API !== "1";
 
+// Vrai uniquement quand les réponses viennent des mocks (démonstration).
+export const DEMO_MODE = useMocks;
+
 if (useMocks) {
   base44Client.interceptors.request.use((config) => {
     console.log(

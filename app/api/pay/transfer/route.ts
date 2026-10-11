@@ -20,8 +20,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
   }
 
-  // Le destinataire est un membre d'une organisation commune ou un
-  // identifiant utilisateur, jamais un libellé libre.
+  // Le destinataire est un membre d'une organisation commune, désigné par sa
+  // fiche membre ou son identifiant utilisateur, jamais un libellé libre.
   const target = parseTransferTarget(payload);
   if (!target) {
     return NextResponse.json({ error: "Destinataire requis" }, { status: 400 });

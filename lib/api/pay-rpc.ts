@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // Codes d'erreur (SQLSTATE) levés par les fonctions SQL de
-// supabase/migrations (0017, 0019 et 0021).
+// supabase/migrations (0017, 0019, 0021 et 0022).
 const PAY_RPC_ERRORS: Record<string, { status: number; message: string }> = {
   PY001: { status: 400, message: "Montant invalide" },
   PY002: { status: 404, message: "Portefeuille introuvable" },

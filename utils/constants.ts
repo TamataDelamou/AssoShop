@@ -1591,6 +1591,8 @@ export const MARKET_LABELS = {
   RULES_LOCKED: "Règles verrouillées",
   MY_CONTRIBUTION: "Ma contribution",
   INVEST: "Investir",
+  INVEST_DEBIT_NOTICE:
+    "Le montant est débité de votre portefeuille AssoShop Pay et placé sur le compte de séquestre du projet.",
   PROJECT_NAME: "Nom du projet",
   AMOUNT: "Montant",
   CLOSED: "Clôturé",
