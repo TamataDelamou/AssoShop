@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthedContext } from "@/lib/api/auth";
 import { MemberRow, serializeMember } from "@/lib/api/members";
+import { isOrgAdmin } from "@/lib/api/org-admin";
+
+const FORBIDDEN = { error: "Action réservée aux administrateurs" };
 
 export async function PATCH(
   request: NextRequest,
@@ -8,9 +11,13 @@ export async function PATCH(
 ) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase } = ctx;
+  const { supabase, user } = ctx;
 
   const { orgId, memberId } = await params;
+  if (!(await isOrgAdmin(supabase, orgId, user.id))) {
+    return NextResponse.json(FORBIDDEN, { status: 403 });
+  }
+
   const payload = await request.json().catch(() => null);
 
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -41,9 +48,12 @@ export async function DELETE(
 ) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase } = ctx;
+  const { supabase, user } = ctx;
 
   const { orgId, memberId } = await params;
+  if (!(await isOrgAdmin(supabase, orgId, user.id))) {
+    return NextResponse.json(FORBIDDEN, { status: 403 });
+  }
 
   const { error } = await supabase
     .from("members")
