@@ -1,6 +1,8 @@
-// Contrôle avant mise en production : toutes les variables d'environnement
-// requises sont-elles présentes et plausibles ? Aucune valeur n'est affichée,
-// seulement le nom de chaque variable et le résultat du contrôle.
+// Contrôle avant mise en production : toutes les variables requises (accès au
+// projet Supabase, secrets des Edge Functions) sont-elles présentes et
+// plausibles ? Aucune valeur n'est affichée, seulement le nom de chaque
+// variable et le résultat du contrôle. AssoShop n'a pas d'application web à
+// héberger : rien ici ne concerne un hébergeur.
 //
 //   node --env-file=.env.production.local scripts/preflight-production.mjs [--migrations] [--allow-real-money]
 //
@@ -35,16 +37,8 @@ const rules = {
       return "n'est pas une adresse valide";
     }
   },
-  apiUrl: (value) => {
-    if (!present(value)) return null;
-    if (/localhost|127\.0\.0\.1/.test(value)) return "pointe vers localhost";
-    if (value.startsWith("/")) return null;
-    return rules.httpsUrl(value);
-  },
   minLength: (length) => (value) =>
     present(value) && value.trim().length < length ? `trop courte (au moins ${length} caractères)` : null,
-  equals: (expected) => (value) =>
-    present(value) && value.trim() !== expected ? `doit valoir ${expected}` : null,
 };
 
 // Renvoie la liste [{ name, level: "ok" | "erreur" | "avertissement" | "info", detail }].
@@ -78,9 +72,14 @@ export function runPreflight(env, options = {}) {
     }
   }
 
-  // --- Application ---
-  check("NEXT_PUBLIC_BASE44_API_URL", [rules.apiUrl]);
-  check("NEXT_PUBLIC_USE_REAL_API", [rules.equals("1")]);
+  // --- Environnement ---
+  // APP_ENV=test lève le garde-fou argent réel des Edge Functions : réservé
+  // au projet de test.
+  if (present(env.APP_ENV) && env.APP_ENV.trim() === "test") {
+    add("APP_ENV", "erreur", "vaut « test » : ce réglage lève le garde-fou argent réel, il est réservé au projet de test");
+  } else {
+    add("APP_ENV", "ok", present(env.APP_ENV) ? "" : "absent (production)");
+  }
 
   // --- Tâches planifiées ---
   check("CRON_SECRET", [rules.notPlaceholder, rules.minLength(32)]);

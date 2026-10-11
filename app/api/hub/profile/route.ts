@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse } from "@/lib/api/pay-rpc";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
@@ -12,21 +13,20 @@ export async function POST(request: NextRequest) {
   } | null;
 
   try {
-    const updates: Record<string, string> = {};
-    if (payload?.city !== undefined) updates.city = payload.city;
-    if (payload?.language !== undefined) updates.language = payload.language;
-
-    if (Object.keys(updates).length > 0) {
-      await supabase
-        .from("user_profiles")
-        .upsert({ user_id: user.id, ...updates }, { onConflict: "user_id" });
-    }
-
-    const { data: p } = await supabase
-      .from("user_profiles")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    // Seules la ville et la langue sont modifiables : fonction SQL
+    // profile_update (0025), plus d'écriture directe sur user_profiles.
+    const { data, error } = await supabase.rpc("profile_update", {
+      p_city: payload?.city ?? null,
+      p_language: payload?.language ?? null,
+    });
+    if (error) return payRpcErrorResponse(error);
+    const p = data as {
+      city?: string;
+      language?: string;
+      engagement?: string;
+      trust_score?: number;
+      kyc_status?: string;
+    } | null;
 
     return NextResponse.json({
       id: user.id,
