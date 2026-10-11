@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
+import { isRealMoneyBlocked, realMoneyBlockedResponse } from "@/lib/api/pay-real-money";
 import { getPayWebhookSecret, isValidWebhookSecret } from "@/lib/api/pay-topup";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
@@ -11,6 +12,8 @@ import { createSupabaseAdminClient } from "@/lib/supabase/server";
 // - Serveur à serveur uniquement : en-tête Authorization: Bearer <secret>.
 //   Aucune session utilisateur n'est acceptée.
 // - Idempotente : rejouer la même référence ne crédite pas une seconde fois.
+// - En production, refusée (503) tant que PAY_REAL_MONEY n'est pas activé :
+//   aucun crédit en argent réel avant le choix du partenaire agréé.
 export async function POST(request: NextRequest) {
   const secret = getPayWebhookSecret();
   if (!secret) {
@@ -19,6 +22,7 @@ export async function POST(request: NextRequest) {
   if (!isValidWebhookSecret(request.headers.get("authorization"), secret)) {
     return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
   }
+  if (isRealMoneyBlocked()) return realMoneyBlockedResponse();
 
   const payload = (await request.json().catch(() => null)) as {
     reference?: unknown;

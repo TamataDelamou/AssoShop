@@ -1,6 +1,8 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { OfflineAndSync } from "@/components/hub/offline/OfflineAndSync";
+import { PayTestModeBanner } from "@/components/pay/PayTestModeBanner";
+import { isRealMoneyEnabled } from "@/lib/api/pay-real-money";
 import { AuthProvider } from "@/lib/contexts/AuthContext";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
@@ -28,12 +30,17 @@ export default async function DashboardLayout({
     redirect("/auth/login");
   }
 
+  // Interrupteur serveur lu à chaque requête (la mise en page est dynamique :
+  // elle lit les cookies).
+  const payTestMode = !isRealMoneyEnabled();
+
   return (
     <AuthProvider>
       <div className="flex h-screen bg-background">
         <Sidebar />
         <div className="flex-1 flex flex-col overflow-hidden">
           <Header />
+          {payTestMode && <PayTestModeBanner />}
           <OfflineAndSync />
           <main className="flex-1 overflow-y-auto p-6">{children}</main>
         </div>

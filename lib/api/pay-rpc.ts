@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // Codes d'erreur (SQLSTATE) levés par les fonctions SQL de
-// supabase/migrations (0017, 0019, 0021 et 0022).
+// supabase/migrations (0017, 0019, 0021 à 0024).
 const PAY_RPC_ERRORS: Record<string, { status: number; message: string }> = {
   PY001: { status: 400, message: "Montant invalide" },
   PY002: { status: 404, message: "Portefeuille introuvable" },
@@ -22,6 +22,7 @@ const PAY_RPC_ERRORS: Record<string, { status: number; message: string }> = {
   PY017: { status: 400, message: "Quantité minimale de commande non atteinte" },
   PY018: { status: 404, message: "Élément introuvable" },
   PY019: { status: 409, message: "Opération impossible dans l'état actuel" },
+  AC001: { status: 409, message: "Compte non supprimable : il doit être anonymisé" },
 };
 
 export interface PayRpcFailure {

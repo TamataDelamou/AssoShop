@@ -29,6 +29,7 @@ export const MIGRATION_MARKERS = {
   "0021_market_wallet_hardening.sql": [{ function: "pay_credit_platform" }, { function: "market_join_group_order" }, { column: ["market_investment_projects", "created_by"] }],
   "0022_reseller_transfer_investment.sql": [{ function: "market_review_reseller_application" }, { function: "pay_shares_organization" }, { column: ["pay_wallets", "project_id"] }, { noPolicy: ["market_reseller_applications", "market_apps_update"] }],
   "0023_investment_escrow_settlement.sql": [{ function: "market_settle_due_investments" }, { function: "market_review_investment_profit" }, { table: "market_investment_distributions" }, { column: ["market_investment_projects", "settled_at"] }],
+  "0024_account_closure.sql": [{ function: "account_close" }, { function: "account_guard_user_delete" }, { table: "account_anonymizations" }],
 };
 
 export function pgClient() {
@@ -62,6 +63,7 @@ async function checkMarker(client, marker) {
   if (marker.noTable) {
     return {
       label: `table ${marker.noTable} supprimée`,
+      negative: true,
       ok: !(await exists(client, "select 1 from information_schema.tables where table_schema = 'public' and table_name = $1", [marker.noTable])),
     };
   }
@@ -98,10 +100,21 @@ async function checkMarker(client, marker) {
   if (marker.noPolicy) {
     return {
       label: `politique ${marker.noPolicy[1]} retirée`,
+      negative: true,
       ok: !(await exists(client, "select 1 from pg_policies where schemaname = 'public' and tablename = $1 and policyname = $2", marker.noPolicy)),
     };
   }
   throw new Error(`Marqueur inconnu : ${JSON.stringify(marker)}`);
+}
+
+// Une migration est présente si tous ses marqueurs sont vérifiés, partielle
+// si une partie seulement l'est. Les marqueurs « négatifs » (table supprimée,
+// politique retirée) sont vrais sur une base vide : seuls, ils ne prouvent
+// rien et ne rendent pas une migration partielle.
+export function summarizeChecks(checks) {
+  const present = checks.every((c) => c.ok);
+  const partial = !present && checks.some((c) => c.ok && !c.negative);
+  return { present, partial };
 }
 
 // Renvoie, pour chaque migration, { file, present, partial, checks }.
@@ -110,15 +123,33 @@ export async function detectState(client) {
   for (const [file, markers] of Object.entries(MIGRATION_MARKERS)) {
     const checks = [];
     for (const marker of markers) checks.push(await checkMarker(client, marker));
-    const okCount = checks.filter((c) => c.ok).length;
-    state.push({
-      file,
-      present: okCount === checks.length,
-      partial: okCount > 0 && okCount < checks.length,
-      checks,
-    });
+    state.push({ file, ...summarizeChecks(checks), checks });
   }
   return state;
+}
+
+// Compte les lignes des tables qui doivent être vides avant l'ouverture d'une
+// base de production. Une table absente (migration non appliquée) donne null.
+export async function dataSummary(client) {
+  const queries = {
+    "comptes utilisateurs (auth.users)": "select count(*)::int as n from auth.users",
+    "administrateurs de la plateforme": "select count(*)::int as n from public.platform_admins",
+    "journal d'audit des actions métier (audit_events)": "select count(*)::int as n from public.audit_events",
+    "journal d'audit du back-office (admin_audit_logs)": "select count(*)::int as n from public.admin_audit_logs",
+    "portefeuilles d'utilisateurs": "select count(*)::int as n from public.pay_wallets where user_id is not null",
+    "transactions": "select count(*)::int as n from public.pay_transactions",
+  };
+  const summary = [];
+  for (const [label, sql] of Object.entries(queries)) {
+    await client.query("savepoint data_summary");
+    try {
+      summary.push({ label, count: (await client.query(sql)).rows[0].n });
+    } catch {
+      await client.query("rollback to savepoint data_summary");
+      summary.push({ label, count: null });
+    }
+  }
+  return summary;
 }
 
 async function main() {
@@ -142,6 +173,11 @@ async function main() {
       "select count(*)::int as n from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
     );
     console.log(`Tables du schéma public : ${rows[0].n}`);
+
+    console.log("\nDonnées (une base de production neuve doit afficher 0 partout) :");
+    for (const entry of await dataSummary(client)) {
+      console.log(`  ${entry.count === null ? "—" : String(entry.count).padStart(5)}  ${entry.label}`);
+    }
     await client.query("rollback");
   } finally {
     await client.end();

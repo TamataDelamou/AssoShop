@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Card,
   CardContent,
@@ -8,7 +9,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { HUB_LABELS } from "@/utils/constants";
+import { hubService } from "@/services/hub/hub";
+import { HUB_LABELS, HUB_MESSAGES } from "@/utils/constants";
 import {
   Eye,
   KeyRound,
@@ -66,6 +68,24 @@ export function SettingsView() {
   const [highContrast, setHighContrast] = useState(false);
   const [shareData, setShareData] = useState(false);
   const [publicProfile, setPublicProfile] = useState(false);
+
+  const router = useRouter();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const deleteAccount = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await hubService.closeAccount();
+      // Session fermée par le serveur : retour à l'écran de connexion.
+      router.replace("/auth/login");
+    } catch {
+      setDeleteError(HUB_MESSAGES.DELETE_ACCOUNT_ERROR);
+      setDeleting(false);
+    }
+  };
 
   const save = () => {
     setSaved(true);
@@ -192,10 +212,40 @@ export function SettingsView() {
               <Button size="sm" variant="outline" className="border-white/10">
                 Exporter mes données
               </Button>
-              <Button size="sm" variant="destructive">
-                Supprimer mon compte
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setConfirmDelete(true)}
+                disabled={confirmDelete}
+              >
+                {HUB_LABELS.DELETE_ACCOUNT}
               </Button>
             </div>
+            {confirmDelete && (
+              <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs">
+                <p>{HUB_LABELS.DELETE_ACCOUNT_WARNING}</p>
+                {deleteError && <p className="text-destructive">{deleteError}</p>}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-white/10"
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={deleting}
+                  >
+                    {HUB_LABELS.DELETE_ACCOUNT_CANCEL}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={deleteAccount}
+                    disabled={deleting}
+                  >
+                    {HUB_LABELS.DELETE_ACCOUNT_CONFIRM}
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0023, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0024, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -1209,6 +1209,128 @@ export async function runSmokeTests(client) {
 
   const escrowLeft = Number((await one(client, "select coalesce(sum(balance), 0) as total from public.pay_wallets where type = 'escrow' and project_id = any($1::uuid[])", [[project.id, funded.id, abandoned.id, empty.id]])).total);
   check("plus aucun fonds bloqué sur les séquestres dénoués", escrowLeft === 0, `reste ${escrowLeft}`);
+
+  // ---- 13. Fermeture de compte : suppression refusée, anonymisation (0024) ----
+  const blockersOf = async (userId) =>
+    (await one(client, "select public.account_deletion_blockers($1) as b", [userId])).b;
+  const closeAccount = (userId) =>
+    as(client, "service_role", null, async () =>
+      (await one(client, "select public.account_close($1) as r", [userId])).r,
+    );
+  const authUser = (userId) =>
+    one(client, "select email, phone, encrypted_password, banned_until, raw_user_meta_data from auth.users where id = $1", [userId]);
+  const deleteUser = (userId) =>
+    expectError(client, () => client.query("delete from auth.users where id = $1", [userId]));
+
+  const buyerBlockers = await blockersOf(buyer);
+  check(
+    "motifs de blocage : solde non nul, commande non livrée, part dans un projet",
+    ["wallet_balance", "undelivered_order", "project_share"].every((b) => buyerBlockers.includes(b)) && !buyerBlockers.includes("escrow_contribution"),
+    buyerBlockers.join(", "),
+  );
+  const sellerBlockers = await blockersOf(seller);
+  check(
+    "le porteur d'un projet financé est engagé (part dans un projet)",
+    sellerBlockers.includes("project_share") && sellerBlockers.includes("wallet_balance"),
+    sellerBlockers.join(", "),
+  );
+  check("un compte sans engagement n'a aucun motif de blocage", (await blockersOf(candidate)).length === 0, (await blockersOf(candidate)).join(", "));
+
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query("select public.account_close($1)", [buyer])),
+  );
+  check("account_close non appelable par un utilisateur", err?.code === "42501", err ? err.code : "acceptée !");
+  err = await expectError(client, () =>
+    as(client, "authenticated", buyer, () => client.query("select public.account_deletion_blockers($1)", [seller])),
+  );
+  check("motifs de blocage d'un tiers non consultables", err?.code === "42501", err ? err.code : "acceptés !");
+
+  const buyerBalanceBeforeDelete = await balanceOf(client, buyer);
+  err = await deleteUser(buyer);
+  check(
+    "suppression directe d'un compte engagé refusée par la base",
+    err?.code === "AC001" && (await balanceOf(client, buyer)) === buyerBalanceBeforeDelete,
+    err ? `${err.code} ${err.message}` : "supprimé !",
+  );
+
+  const cleanUser = await createUser(client, "propre");
+  err = await deleteUser(cleanUser);
+  const cleanLeft = await one(client, "select count(*)::int as n from auth.users where id = $1", [cleanUser]);
+  check("un compte sans engagement reste supprimable", err === null && cleanLeft.n === 0, err ? `${err.code} ${err.message}` : `${cleanLeft.n} ligne(s)`);
+
+  const candidateEmail = (await authUser(candidate)).email;
+  const deletable = await closeAccount(candidate);
+  check(
+    "account_close : compte sans engagement à supprimer, laissé intact",
+    deletable.action === "delete" && (await authUser(candidate)).email === candidateEmail,
+    JSON.stringify(deletable),
+  );
+
+  // Investisseur dont la contribution est encore en séquestre.
+  const escrowProject = await as(client, "authenticated", candidate, () =>
+    one(client, "select * from public.market_create_investment_project('Projet en collecte (test)', '', 'commerce', 100000, 'GNF', 'Règles', current_date + 30)"),
+  );
+  const outsiderBeforeEscrow = await balanceOf(client, outsider);
+  await as(client, "authenticated", outsider, () => client.query("select public.market_invest($1, 40)", [escrowProject.id]));
+  const outsiderBlockers = await blockersOf(outsider);
+  check("une contribution en séquestre bloque la suppression", outsiderBlockers.includes("escrow_contribution"), outsiderBlockers.join(", "));
+  err = await deleteUser(outsider);
+  check("suppression d'un investisseur en séquestre refusée par la base", err?.code === "AC001", err ? err.code : "supprimé !");
+
+  const txBefore = (await one(client, "select count(*)::int as n from public.pay_transactions where user_id = $1", [outsider])).n;
+  const anonymized = await closeAccount(outsider);
+  const anonymizedUser = await authUser(outsider);
+  check(
+    "account_close : compte engagé anonymisé, avec ses motifs",
+    anonymized.action === "anonymized" && anonymized.already === false &&
+      anonymized.reasons.includes("escrow_contribution") && anonymized.reasons.includes("wallet_balance"),
+    JSON.stringify(anonymized),
+  );
+  check(
+    "identité de connexion effacée et compte bloqué",
+    anonymizedUser.email === `anonyme-${outsider}@anonymise.invalid` &&
+      anonymizedUser.phone === null &&
+      anonymizedUser.encrypted_password === null &&
+      anonymizedUser.banned_until !== null &&
+      JSON.stringify(anonymizedUser.raw_user_meta_data) === "{}",
+    JSON.stringify({ ...anonymizedUser, encrypted_password: anonymizedUser.encrypted_password === null ? null : "présent" }),
+  );
+  const anonymizedMember = await one(client, "select name, email, phone from public.members where user_id = $1", [outsider]);
+  check(
+    "nom, e-mail et téléphone effacés dans l'annuaire des membres",
+    anonymizedMember?.name === "Compte anonymisé" && anonymizedMember?.email === null && anonymizedMember?.phone === null,
+    JSON.stringify(anonymizedMember),
+  );
+  const txAfter = (await one(client, "select count(*)::int as n from public.pay_transactions where user_id = $1", [outsider])).n;
+  const anonymizationRow = await one(client, "select reasons from public.account_anonymizations where user_id = $1", [outsider]);
+  check(
+    "identifiant, solde et écritures comptables conservés",
+    (await balanceOf(client, outsider)) === outsiderBeforeEscrow - 40 && txAfter === txBefore && txAfter > 0 &&
+      (await escrowBalance(client, escrowProject.id)) === 40 && Boolean(anonymizationRow),
+    `solde ${await balanceOf(client, outsider)}, ${txAfter}/${txBefore} transaction(s)`,
+  );
+  const anonymizationLogs = async () =>
+    (await one(client, "select count(*)::int as n from public.admin_audit_logs where action = $1", [`account_anonymized:${outsider}`])).n;
+  check("anonymisation journalisée dans admin_audit_logs", (await anonymizationLogs()) === 1);
+
+  const again = await closeAccount(outsider);
+  check(
+    "seconde fermeture sans effet (idempotente)",
+    again.action === "anonymized" && again.already === true && (await anonymizationLogs()) === 1,
+    JSON.stringify(again),
+  );
+  err = await deleteUser(outsider);
+  check("un compte anonymisé encore engagé reste non supprimable", err?.code === "AC001", err ? err.code : "supprimé !");
+
+  await expire(escrowProject.id);
+  const anonymizedRun = await settle();
+  check(
+    "dénouement sans erreur pour un investisseur anonymisé : il est remboursé",
+    anonymizedRun.refunded === 1 && anonymizedRun.failed.length === 0 &&
+      (await balanceOf(client, outsider)) === outsiderBeforeEscrow &&
+      (await escrowBalance(client, escrowProject.id)) === 0,
+    `${JSON.stringify(anonymizedRun)}, solde ${await balanceOf(client, outsider)}`,
+  );
 
   const metrics2 = (await one(client, "select public.cp_metrics_snapshot() as m")).m;
   check(
