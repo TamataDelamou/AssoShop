@@ -70,6 +70,10 @@ export function OrganizationsPage() {
     router.push(`/dashboard/organizations/${orgId}/sanctions`);
   };
 
+  const handleViewAudit = (orgId: string) => {
+    router.push(`/dashboard/organizations/${orgId}/audit`);
+  };
+
   const handleViewGovernance = (orgId: string) => {
     router.push(`/dashboard/organizations/${orgId}/governance`);
   };
@@ -333,6 +337,14 @@ export function OrganizationsPage() {
                         className="text-muted-foreground hover:text-foreground"
                       >
                         Sanctions
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleViewAudit(org.id)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {ORGANIZATION_LABELS.AUDIT_BUTTON}
                       </Button>
                       <Button
                         variant="ghost"
