@@ -6,10 +6,12 @@ import { authorizeControlPlane } from "@/lib/control-plane/guard";
 const SOURCES = {
   admin: "admin_audit_logs",
   security: "admin_security_audit",
+  // Journal des actions métier (migration 0018, cahier v6 §14).
+  activity: "audit_events",
 } as const;
 type Source = keyof typeof SOURCES;
 
-// GET /api/control-plane/audit-logs?source=admin|security&since=ISO&limit=N
+// GET /api/control-plane/audit-logs?source=admin|security|activity&since=ISO&limit=N
 // Lecture paginée (ordre chronologique croissant) des journaux d'audit.
 // Pagination : repasser `next_since` dans `since`. Scope requis : audit:read.
 export async function GET(request: Request) {

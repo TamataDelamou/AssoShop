@@ -55,6 +55,7 @@ import {
   PlatformUserStatus,
   ReviewStatus,
 } from "@/types/modules/admin";
+import { AuditEventType, AuditPeriod } from "@/types/modules/audit";
 
 // ============================================
 // 1. MESSAGES D'AUTHENTIFICATION
@@ -147,6 +148,7 @@ export const ORGANIZATION_LABELS = {
   FINANCE_LOANS_BUTTON: "Prêts",
   FINANCE_SOLIDARITY_BUTTON: "Solidarité",
   ACCOUNTING_BUTTON: "Comptabilité",
+  AUDIT_BUTTON: "Journal d'audit",
   EDIT_BUTTON: "Modifier",
   NO_DATA: "Aucune association trouvée",
   NO_SEARCH_RESULTS: "Aucun résultat pour cette recherche",
@@ -2092,4 +2094,103 @@ export const SHARED_MEMBERSHIP_CONFIG = {
   CACHE_TTL_MS: 1000 * 60 * 60,
   CACHE_KEY_PREFIX: "shared-memberships:",
   SYNC_MODULE: "shared-memberships",
+};
+
+// ============================================
+// JOURNAL D'AUDIT (cahier v6 §14)
+// ============================================
+export const AUDIT_CONFIG = {
+  CACHE_TTL_MS: 1000 * 60 * 5,
+  CACHE_KEY_PREFIX: "audit:",
+  SYNC_MODULE: "audit",
+  PAGE_SIZE: 50,
+  PAGE_SIZE_MAX: 200,
+  DEFAULT_PERIOD: AuditPeriod.LAST_30_DAYS,
+  // Valeur du filtre « tous les types » (le composant Select refuse la chaîne vide).
+  ALL_EVENT_TYPES: "all",
+};
+
+// Fenêtre de chaque période, en jours (null = sans limite).
+export const AUDIT_PERIOD_DAYS: Record<AuditPeriod, number | null> = {
+  [AuditPeriod.LAST_7_DAYS]: 7,
+  [AuditPeriod.LAST_30_DAYS]: 30,
+  [AuditPeriod.LAST_90_DAYS]: 90,
+  [AuditPeriod.ALL]: null,
+};
+
+export const AUDIT_PERIOD_LABELS: Record<AuditPeriod, string> = {
+  [AuditPeriod.LAST_7_DAYS]: "7 derniers jours",
+  [AuditPeriod.LAST_30_DAYS]: "30 derniers jours",
+  [AuditPeriod.LAST_90_DAYS]: "90 derniers jours",
+  [AuditPeriod.ALL]: "Toute la période",
+};
+
+export const AUDIT_EVENT_LABELS: Record<AuditEventType, string> = {
+  [AuditEventType.PAY_PAYMENT]: "Paiement",
+  [AuditEventType.PAY_TOPUP]: "Recharge du portefeuille",
+  [AuditEventType.PAY_WITHDRAWAL]: "Retrait",
+  [AuditEventType.PAY_TRANSFER]: "Transfert",
+  [AuditEventType.CONTRIBUTION_VALIDATED]: "Cotisation validée",
+  [AuditEventType.CONTRIBUTION_REJECTED]: "Cotisation rejetée",
+  [AuditEventType.LOAN_APPROVED]: "Prêt approuvé",
+  [AuditEventType.LOAN_REJECTED]: "Prêt refusé",
+  [AuditEventType.LOAN_REPAID]: "Prêt remboursé",
+  [AuditEventType.LOAN_INSTALLMENT_REPAID]: "Échéance de prêt remboursée",
+  [AuditEventType.GROUP_PAYMENT_VALIDATED]: "Versement de groupe validé",
+  [AuditEventType.SOCIAL_CASE_UNDER_REVIEW]: "Cas social en examen",
+  [AuditEventType.SOCIAL_CASE_APPROVED]: "Cas social approuvé",
+  [AuditEventType.SOCIAL_CASE_FUNDED]: "Cas social financé",
+  [AuditEventType.SOCIAL_CASE_DISBURSED]: "Cas social décaissé",
+  [AuditEventType.SOCIAL_CASE_REJECTED]: "Cas social rejeté",
+  [AuditEventType.ACCOUNTING_ENTRY_VALIDATED]: "Écriture comptable validée",
+  [AuditEventType.ACCOUNTING_ENTRY_REJECTED]: "Écriture comptable rejetée",
+  [AuditEventType.MEMBER_ROLE_CHANGED]: "Rôle d'un membre modifié",
+  [AuditEventType.MEMBER_STATUS_CHANGED]: "Statut d'un membre modifié",
+  [AuditEventType.MEMBER_REMOVED]: "Membre supprimé",
+  [AuditEventType.SIGNATURE_SIGNED]: "Document signé",
+  [AuditEventType.SIGNATURE_REJECTED]: "Signature refusée",
+};
+
+// Préfixe des événements du portefeuille personnel : sans organisation, ils ne
+// figurent pas dans le journal d'une organisation.
+export const AUDIT_PERSONAL_EVENT_PREFIX = "pay.";
+
+// Types proposés dans le filtre de l'écran organisation.
+export const AUDIT_ORG_EVENT_TYPES: AuditEventType[] = Object.values(
+  AuditEventType,
+).filter((type) => !type.startsWith(AUDIT_PERSONAL_EVENT_PREFIX));
+
+// Champs affichés dans la colonne « Changement » (états avant / après).
+export const AUDIT_SNAPSHOT_FIELD_LABELS: Record<string, string> = {
+  status: "Statut",
+  role: "Rôle",
+  entry_type: "Nature",
+  type: "Type",
+};
+
+export const AUDIT_LABELS = {
+  PAGE_TITLE: "Journal d'audit",
+  PAGE_SUBTITLE:
+    "Actions sensibles de l'organisation : validations, paiements, changements de rôle, signatures. Lecture seule.",
+  LIST_TITLE: "Événements",
+  FILTER_EVENT_TYPE: "Type d'événement",
+  FILTER_PERIOD: "Période",
+  ALL_EVENT_TYPES: "Tous les types",
+  COLUMN_DATE: "Date",
+  COLUMN_EVENT: "Événement",
+  COLUMN_ACTOR: "Auteur",
+  COLUMN_AMOUNT: "Montant",
+  COLUMN_CHANGE: "Changement",
+  ACTOR_SYSTEM: "Système",
+  ACTOR_UNKNOWN: "Utilisateur",
+  NO_VALUE: "—",
+  CHANGE_ARROW: "→",
+  EMPTY: "Aucun événement sur cette période.",
+  LOAD_MORE: "Charger plus",
+  LOADING_MORE: "Chargement...",
+  REFRESH: "Actualiser",
+  OFFLINE_NOTICE: "Hors connexion : affichage du dernier journal consulté.",
+  FORBIDDEN: "Journal réservé aux administrateurs de l'organisation",
+  INVALID_EVENT_TYPE: "Type d'événement invalide",
+  INVALID_DATE: "Date invalide",
 };

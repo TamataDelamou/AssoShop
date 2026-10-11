@@ -6,6 +6,7 @@ import { affiliationsMockAdapter } from "@/lib/base44/mocks/affiliations";
 import { announcementsMockAdapter } from "@/lib/base44/mocks/announcements";
 import { antennasMockAdapter } from "@/lib/base44/mocks/antennas";
 import { assetsMockAdapter } from "@/lib/base44/mocks/assets";
+import { auditMockAdapter } from "@/lib/base44/mocks/audit";
 import { beneficiariesMockAdapter } from "@/lib/base44/mocks/beneficiaries";
 import { accountingMockAdapter } from "@/lib/base44/mocks/accounting";
 import { contributionsMockAdapter } from "@/lib/base44/mocks/contributions";
@@ -65,6 +66,7 @@ if (useMocks) {
       announcementsMockAdapter(config) ??
       antennasMockAdapter(config) ??
       assetsMockAdapter(config) ??
+      auditMockAdapter(config) ??
       beneficiariesMockAdapter(config) ??
       contributionsMockAdapter(config) ??
       documentsMockAdapter(config) ??

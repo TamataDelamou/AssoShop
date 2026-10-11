@@ -20,3 +20,4 @@ export * from "./governance";
 export * from "./hr";
 export * from "./tasks";
 export * from "./treasury";
+export * from "./audit";

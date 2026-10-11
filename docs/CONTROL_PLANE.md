@@ -19,7 +19,7 @@ AssoShop fonctionne entièrement sans le Kernel : si le Control Plane est indisp
 
 ### 2.1 Mécanisme
 - Pattern **outbox** : table `control_plane_outbox` (migration `0016`).
-- Les journaux d'audit (`admin_audit_logs`, `admin_security_audit`) sont mis en file **automatiquement par trigger SQL**, sans dépendre du code applicatif.
+- Les journaux d'audit (`admin_audit_logs`, `admin_security_audit`, et `audit_events` pour les actions métier — migration `0018`) sont mis en file **automatiquement par trigger SQL**, sans dépendre du code applicatif.
 - Un instantané de métriques est mis en file à chaque déclenchement de `/api/control-plane/push` (planificateur, ex. toutes les 15 min).
 - Envoi par lots de 100, **rejeu exponentiel** (30 s → 6 h max), abandon après 10 tentatives (statut `failed`, visible dans `/health`).
 - En-tête `Idempotency-Key` (SHA-256 des identifiants du lot) et `outbox_id` sur chaque élément : **le Kernel doit dédoublonner** (livraison « au moins une fois »).
@@ -57,7 +57,7 @@ Algorithme selon la clé fournie : HS256 (secret partagé ≥ 32 caractères) ou
   "events": [
     {
       "outbox_id": "uuid",
-      "source": "admin | security",
+      "source": "admin | security | activity",
       "id": "uuid de l'entrée d'audit",
       "occurred_at": "2026-10-11T13:59:12.000Z",
       "record": { "actor": "…", "action": "toggle_country:…", "module": "config", "severity": "info" }
@@ -89,6 +89,7 @@ Algorithme selon la clé fournie : HS256 (secret partagé ≥ 32 caractères) ou
         "pay_transactions_24h_count": 0, "pay_transactions_24h_volume": 0, "pay_commissions_24h": 0,
         "market_orders_24h_count": 0, "market_gmv_24h": 0,
         "kyc_pending": 0, "disputes_open": 0,
+        "audit_events_24h": 0,
         "outbox_pending": 0, "outbox_failed": 0
       }
     }
@@ -97,13 +98,48 @@ Algorithme selon la clé fournie : HS256 (secret partagé ≥ 32 caractères) ou
 ```
 Uniquement des **agrégats** : aucune donnée personnelle de membre ne quitte AssoShop par ce canal.
 
+### 2.5 Source `activity` : journal des actions métier
+
+Les événements de la table `audit_events` (migration `0018`) sont écrits par triggers SQL sur les tables métier et remontent avec `"source": "activity"`. Le champ `record` a la forme suivante :
+
+```json
+{
+  "id": "uuid",
+  "organization_id": "uuid | null",
+  "actor_id": "uuid | null",
+  "event_type": "contribution.validated",
+  "entity_type": "contribution",
+  "entity_id": "uuid",
+  "amount": 50000,
+  "currency": "GNF | null",
+  "before": { "status": "pending" },
+  "after": { "status": "paid" },
+  "created_at": "2026-10-11T13:59:12.000Z"
+}
+```
+
+| Domaine | `event_type` |
+| --- | --- |
+| Portefeuille (sans organisation) | `pay.payment`, `pay.topup`, `pay.withdrawal`, `pay.transfer` |
+| Cotisations | `contribution.validated`, `contribution.rejected` |
+| Prêts | `loan.approved`, `loan.rejected`, `loan.repaid`, `loan.installment_repaid` |
+| Groupes financiers | `group_payment.validated` |
+| Cas sociaux | `social_case.under_review`, `social_case.approved`, `social_case.funded`, `social_case.disbursed`, `social_case.rejected` |
+| Comptabilité | `accounting_entry.validated`, `accounting_entry.rejected` |
+| Membres | `member.role_changed`, `member.status_changed`, `member.removed` |
+| Signatures | `signature.signed`, `signature.rejected` |
+
+- `actor_id` est l'identifiant technique de l'utilisateur (`auth.uid()`), `null` pour une action du système.
+- `before` / `after` ne portent que le statut, le rôle et des identifiants techniques : **ni nom, ni téléphone, ni pièce KYC**.
+- La table est en **ajout seul** : toute modification ou suppression est refusée en base.
+
 ## 3. Flux entrant : Kernel → AssoShop (pull)
 
 | Méthode | Chemin | Scope requis | Rôle |
 | --- | --- | --- | --- |
 | `GET` | `/api/control-plane/health` | `health:read` | État de l'instance (base, file d'envoi, configuration) |
 | `GET` | `/api/control-plane/metrics` | `metrics:read` | Instantané des métriques calculé à la demande |
-| `GET` | `/api/control-plane/audit-logs?source=admin\|security&since=ISO&limit=≤500` | `audit:read` | Journaux d'audit paginés (repasser `next_since`) |
+| `GET` | `/api/control-plane/audit-logs?source=admin\|security\|activity&since=ISO&limit=≤500` | `audit:read` | Journaux d'audit paginés (repasser `next_since`) |
 | `GET`/`POST` | `/api/control-plane/push` | `control-plane:push` (ou `CRON_SECRET`) | Force un instantané + envoi de la file |
 
 ### 3.1 Jeton entrant (signé par le Kernel)
@@ -155,4 +191,9 @@ Planification : appeler `GET /api/control-plane/push` avec `Authorization: Beare
 
 ## 6. Limite connue
 
-Les journaux d'audit actuels couvrent les **actions d'administration et de sécurité**. Le cahier v6 (§14) demande aussi la journalisation des paiements, validations, retraits et changements de rôle côté organisations : ces événements ne sont pas encore écrits dans un journal d'audit et ne remonteront donc pas tant que ce n'est pas fait.
+Depuis la migration `0018`, les actions métier demandées par le cahier v6 (§14) — paiements, validations, retraits, changements de rôle — sont journalisées dans `audit_events` et remontent avec la source `activity`. Restent hors du journal :
+
+- **Actions antérieures à la migration** : aucune reprise d'historique, le journal démarre à l'application de `0018`.
+- **Créations et versements directs** : seuls les changements de statut sont tracés (validation, rejet, remboursement…). Un versement de groupe ou une cotisation enregistrés directement à l'état final, sans passer par une validation, ne produisent pas d'événement.
+- **Modules non couverts** : Market (commandes, revendeurs), sanctions, élections et adhésions aux groupes ne sont pas encore reliés au journal.
+- **Auteur** : `actor_id` est vide pour toute écriture faite avec la clé `service_role` (tâches serveur, scripts), l'identité de l'appelant n'étant alors pas connue de la base.
