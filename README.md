@@ -31,8 +31,7 @@ Copier `.env.example` vers `.env.local` puis renseigner les variables :
 | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | URL du projet Supabase |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clé `anon` du projet Supabase |
-| `NEXT_PUBLIC_KERNEL_API_URL` | URL du GSG Platform Kernel (optionnel, mocké par défaut) |
-| `NEXT_PUBLIC_KERNEL_API_KEY` | Clé du Kernel (optionnel) |
+| `CONTROL_PLANE_*`, `CRON_SECRET` | Reporting vers le Control Plane GSG (serveur uniquement, voir [docs/CONTROL_PLANE.md](./docs/CONTROL_PLANE.md)) |
 | `NEXT_PUBLIC_BASE44_API_URL` | URL de l'API métier (défaut : `/api`) |
 
 Appliquer les migrations SQL présentes dans `supabase/migrations/` à la base Supabase
