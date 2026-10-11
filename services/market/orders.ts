@@ -30,6 +30,14 @@ export const ordersService = {
     return response.data;
   },
 
+  async cancelOrder(orderId: string): Promise<Order> {
+    const response = await base44Client.post(`/market/orders/${orderId}/cancel`);
+    if (!response.data) {
+      throw new Error(MARKET_MESSAGES.CANCEL_ERROR);
+    }
+    return response.data;
+  },
+
   async getGroupOrders(): Promise<GroupOrder[]> {
     const response = await base44Client.get("/market/orders/group");
     return response.data;

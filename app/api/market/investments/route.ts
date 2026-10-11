@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 export async function GET() {
   const ctx = await getAuthedContext();
@@ -51,30 +52,21 @@ export async function POST(request: NextRequest) {
     profit_sharing_rules?: string;
   } | null;
 
-  try {
-    if (!payload?.name?.trim()) {
-      return NextResponse.json({ error: "Nom du projet requis" }, { status: 400 });
-    }
-
-    const { data, error } = await supabase
-      .from("market_investment_projects")
-      .insert({
-        name: payload.name,
-        description: payload.description ?? "",
-        sector: payload.sector ?? "",
-        target_amount: payload.target_amount ?? 0,
-        raised_amount: 0,
-        currency: payload.currency ?? "GNF",
-        profit_sharing_rules: payload.profit_sharing_rules ?? "",
-        rules_locked: false,
-        status: "open",
-      })
-      .select()
-      .single();
-    if (error) throw error;
-
-    return NextResponse.json({ ...data, my_contribution: 0 });
-  } catch (err) {
-    return apiError(err);
+  if (!payload?.name?.trim()) {
+    return NextResponse.json({ error: "Nom du projet requis" }, { status: 400 });
   }
+
+  // Le créateur est enregistré par la fonction SQL : lui seul pourra modifier
+  // les règles de répartition, et seulement avant le premier investissement.
+  const { data, error } = await supabase.rpc("market_create_investment_project", {
+    p_name: payload.name,
+    p_description: payload.description ?? "",
+    p_sector: payload.sector ?? "",
+    p_target_amount: payload.target_amount ?? 0,
+    p_currency: payload.currency ?? "GNF",
+    p_profit_sharing_rules: payload.profit_sharing_rules ?? "",
+  });
+  if (error) return payRpcErrorResponse(error);
+
+  return NextResponse.json({ ...rpcRow<Record<string, unknown>>(data), my_contribution: 0 });
 }

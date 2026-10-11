@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { parseAmount, payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 export async function POST(
   request: NextRequest,
@@ -14,56 +15,36 @@ export async function POST(
     amount?: number;
   } | null;
 
+  const amount = parseAmount(payload?.amount);
+  if (amount === null) {
+    return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
+  }
+
+  // Contribution, montant collecté et verrouillage des règles (RG-M05) dans la
+  // fonction SQL market_invest : le projet n'est plus modifiable directement.
+  const { data, error } = await supabase.rpc("market_invest", {
+    p_project_id: projectId,
+    p_amount: amount,
+  });
+  if (error) return payRpcErrorResponse(error);
+
   try {
-    const amount = payload?.amount ?? 0;
-    if (!amount || amount <= 0) {
-      return NextResponse.json({ error: "Montant invalide" }, { status: 400 });
-    }
-
-    const { data: project } = await supabase
-      .from("market_investment_projects")
-      .select("*")
-      .eq("id", projectId)
-      .maybeSingle();
-    if (!project) {
-      return NextResponse.json({ error: "Projet introuvable" }, { status: 404 });
-    }
-    if (project.status !== "open") {
-      return NextResponse.json(
-        { error: "Le projet n'est plus ouvert à l'investissement" },
-        { status: 400 },
-      );
-    }
-
-    const raisedAmount = project.raised_amount + amount;
-    const status = raisedAmount >= project.target_amount ? "completed" : "open";
-
-    const { data: updated, error: updateError } = await supabase
-      .from("market_investment_projects")
-      .update({ raised_amount: raisedAmount, rules_locked: true, status })
-      .eq("id", projectId)
-      .select()
-      .single();
-    if (updateError) throw updateError;
-
-    await supabase.from("market_investment_contributions").insert({
-      project_id: projectId,
-      user_id: user.id,
-      amount,
-    });
-
-    const { data: myContributions } = await supabase
+    const { data: myContributions, error: contributionsError } = await supabase
       .from("market_investment_contributions")
       .select("amount")
       .eq("project_id", projectId)
       .eq("user_id", user.id);
+    if (contributionsError) throw contributionsError;
 
     const myContribution = (myContributions ?? []).reduce(
       (sum, c) => sum + c.amount,
       0,
     );
 
-    return NextResponse.json({ ...updated, my_contribution: myContribution });
+    return NextResponse.json({
+      ...rpcRow<Record<string, unknown>>(data),
+      my_contribution: myContribution,
+    });
   } catch (err) {
     return apiError(err);
   }

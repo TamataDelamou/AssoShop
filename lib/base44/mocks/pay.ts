@@ -13,6 +13,7 @@ import {
   TransactionType,
   TopupPayload,
   TransferPayload,
+  TransferRecipient,
   Wallet,
   WalletType,
   WithdrawPayload,
@@ -35,6 +36,13 @@ const BUNDLE_URL = /^\/pay\/bundle$/;
 const TOPUP_URL = /^\/pay\/topup$/;
 const WITHDRAW_URL = /^\/pay\/withdraw$/;
 const TRANSFER_URL = /^\/pay\/transfer$/;
+const RECIPIENTS_URL = /^\/pay\/recipients$/;
+
+// Membres des organisations de l'utilisateur de démo (cf. mock des membres).
+const recipients: TransferRecipient[] = [
+  { member_id: "m-2", user_id: "u-2", name: "Mamadou Bah", organization_id: "org-1", organization_name: "Association de démonstration" },
+  { member_id: "m-3", user_id: "u-3", name: "Fatoumata Camara", organization_id: "org-1", organization_name: "Association de démonstration" },
+];
 const METHODS_URL = /^\/pay\/methods$/;
 const MATCH_URL = /^\/pay\/reconciliation\/([^/]+)\/match$/;
 const SETTINGS_URL = /^\/pay\/settings$/;
@@ -450,6 +458,12 @@ function transfer(config: InternalAxiosRequestConfig): TransactionDTO | null {
   const payload = (config.data ?? {}) as TransferPayload;
   if (!payload.amount || payload.amount <= 0) return null;
 
+  // Le destinataire doit être un membre connu, jamais un libellé libre.
+  const recipient = recipients.find(
+    (r) => r.member_id === payload.to_member_id || r.user_id === payload.to_user_id,
+  );
+  if (!recipient) return null;
+
   const wallet = wallets.find((w) => w.id === payload.from_wallet_id);
   if (!wallet) return null;
   if (wallet.balance < payload.amount) return null;
@@ -465,7 +479,7 @@ function transfer(config: InternalAxiosRequestConfig): TransactionDTO | null {
     status: TransactionStatus.CONFIRMED,
     amount: payload.amount,
     currency: wallet.currency,
-    counterparty: payload.to_member,
+    counterparty: recipient.name,
     description: "Transfert entre membres",
     commission: 0,
     reference: nextRef(),
@@ -531,6 +545,9 @@ export function payMockAdapter(
   }
   if (method === "post" && WITHDRAW_URL.test(url)) {
     return async (cfg) => toResponse(withdraw(cfg));
+  }
+  if (method === "get" && RECIPIENTS_URL.test(url)) {
+    return async () => toResponse(clone(recipients));
   }
   if (method === "post" && TRANSFER_URL.test(url)) {
     return async (cfg) => toResponse(transfer(cfg));

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // Codes d'erreur (SQLSTATE) levés par les fonctions SQL de
-// supabase/migrations/0017_wallet_integrity.sql et 0019_market_topup_integrity.sql.
+// supabase/migrations (0017, 0019 et 0021).
 const PAY_RPC_ERRORS: Record<string, { status: number; message: string }> = {
   PY001: { status: 400, message: "Montant invalide" },
   PY002: { status: 404, message: "Portefeuille introuvable" },
@@ -15,6 +15,13 @@ const PAY_RPC_ERRORS: Record<string, { status: number; message: string }> = {
   PY010: { status: 409, message: "Paiement indisponible pour ce revendeur" },
   PY011: { status: 404, message: "Recharge introuvable" },
   PY012: { status: 409, message: "Recharge non confirmable" },
+  PY013: { status: 400, message: "Transfert vers soi-même impossible" },
+  PY014: { status: 404, message: "Destinataire introuvable" },
+  PY015: { status: 409, message: "Devises incompatibles" },
+  PY016: { status: 409, message: "Stock insuffisant" },
+  PY017: { status: 400, message: "Quantité minimale de commande non atteinte" },
+  PY018: { status: 404, message: "Élément introuvable" },
+  PY019: { status: 409, message: "Opération impossible dans l'état actuel" },
 };
 
 export interface PayRpcFailure {

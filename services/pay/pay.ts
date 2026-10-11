@@ -8,6 +8,7 @@ import {
   TopupPayload,
   Transaction,
   TransferPayload,
+  TransferRecipient,
   WithdrawPayload,
 } from "@/types/modules/pay";
 import { PAY_MESSAGES } from "@/utils/constants";
@@ -38,6 +39,14 @@ export const payService = {
     const response = await base44Client.post("/pay/transfer", payload);
     if (!response.data) {
       throw new Error(PAY_MESSAGES.TRANSFER_ERROR);
+    }
+    return response.data;
+  },
+
+  async getRecipients(): Promise<TransferRecipient[]> {
+    const response = await base44Client.get("/pay/recipients");
+    if (!Array.isArray(response.data)) {
+      throw new Error(PAY_MESSAGES.RECIPIENTS_LOAD_ERROR);
     }
     return response.data;
   },

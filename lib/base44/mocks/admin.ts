@@ -594,6 +594,7 @@ function getBundle() {
     moderation: clone(moderation),
     investments: clone(investments),
     commissions: clone(commissions),
+    platform_wallet: { balance: 1284500, currency: "GNF" },
     plans: clone(plans),
     invoices: clone(invoices),
     config: clone(config),

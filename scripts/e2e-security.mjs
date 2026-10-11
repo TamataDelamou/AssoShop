@@ -1,6 +1,8 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0020 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0021 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
-// marché payée et partagée, journal d'audit. Les données de test sont
+// marché payée et partagée, journal d'audit, puis stock, portefeuille
+// plateforme, transfert vers un destinataire réel, commandes groupées,
+// investissement, annulation et avancement logistique. Les données de test sont
 // supprimées à la fin (sauf audit_events, en ajout seul par conception).
 //
 // Prérequis : serveur lancé avec NEXT_PUBLIC_USE_REAL_API=1 et le même
@@ -71,6 +73,9 @@ async function api(path, { method = "GET", user, body, headers = {} } = {}) {
     method,
     headers: {
       "Content-Type": "application/json",
+      // Une connexion par requête : évite les « fetch failed » quand le
+      // serveur de dev ferme une connexion keep-alive entre deux appels.
+      Connection: "close",
       ...(user ? { Cookie: user.cookie } : {}),
       ...headers,
     },
@@ -86,6 +91,15 @@ async function api(path, { method = "GET", user, body, headers = {} } = {}) {
   return { status: res.status, json };
 }
 
+async function platformBalance() {
+  const { data } = await admin
+    .from("pay_wallets")
+    .select("balance")
+    .eq("type", "platform")
+    .maybeSingle();
+  return data ? Number(data.balance) : null;
+}
+
 async function balance(user) {
   const { json } = await api("/api/market/wallet", { user });
   return json?.balance ?? null;
@@ -93,7 +107,8 @@ async function balance(user) {
 
 async function main() {
   if (!WEBHOOK_SECRET) throw new Error("PAY_WEBHOOK_SECRET requis (identique à celui du serveur).");
-  const created = { users: [], orgId: null };
+  const created = { users: [], orgId: null, projectId: null };
+  const platformBefore = await platformBalance();
 
   try {
     console.log("\n1. Connexion");
@@ -202,7 +217,112 @@ async function main() {
       types.join(", "),
     );
 
-    console.log("\n5. Écrans (navigateur)");
+    console.log("\n5. Portefeuille plateforme et stock");
+    const topupFee = Number(topup?.commission ?? 0);
+    check("portefeuille plateforme présent", platformBefore !== null);
+    check(
+      "plateforme créditée des commissions (recharge + vente)",
+      (await platformBalance()) === platformBefore + topupFee + commission,
+      `solde ${await platformBalance()}, attendu ${platformBefore + topupFee + commission}`,
+    );
+    const hidden = await buyer.client.from("pay_wallets").select("id").eq("type", "platform");
+    check("portefeuille plateforme invisible avec la clé anon", (hidden.data ?? []).length === 0, "visible !");
+
+    const { data: stockRow } = await admin.from("market_products").select("stock").eq("id", product.id).single();
+    check("stock décrémenté au paiement (50 → 48)", stockRow.stock === 48, `stock ${stockRow.stock}`);
+    r = await api("/api/market/orders", { method: "POST", user: buyer, body: { items: [{ product_id: product.id, quantity: 500 }] } });
+    check("commande au-delà du stock refusée (409)", r.status === 409, `statut ${r.status}`);
+    const { data: lotProduct } = await admin
+      .from("market_products")
+      .insert({ reseller_id: reseller.id, name: `Produit lot E2E ${RUN}`, retail_price: 100, wholesale_price: 100, stock: 50, min_order_quantity: 5, status: "published" })
+      .select()
+      .single();
+    r = await api("/api/market/orders", { method: "POST", user: buyer, body: { items: [{ product_id: lotProduct.id, quantity: 2 }] } });
+    check("commande sous la quantité minimale refusée (400)", r.status === 400, `statut ${r.status}`);
+
+    console.log("\n6. Annulation et avancement logistique");
+    r = await api("/api/market/orders", { method: "POST", user: buyer, body: { items: [{ product_id: product.id, quantity: 1 }] } });
+    const unpaid = r.json;
+    r = await api(`/api/market/orders/${unpaid?.id}/cancel`, { method: "POST", user: seller });
+    check("annulation refusée à un tiers (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/market/orders/${unpaid?.id}/cancel`, { method: "POST", user: buyer });
+    check("l'acheteur annule sa commande non payée", r.status === 200 && r.json?.status === "cancelled", `statut ${r.status}`);
+    r = await api(`/api/market/orders/${order?.id}/cancel`, { method: "POST", user: buyer });
+    check("annulation d'une commande payée refusée (409)", r.status === 409, `statut ${r.status}`);
+
+    r = await api(`/api/market/reseller/orders/${order?.id}/advance`, { method: "POST", user: seller, body: { status: "delivered" } });
+    check("la route d'avancement refuse « livrée » (400)", r.status === 400, `statut ${r.status}`);
+    r = await api(`/api/market/reseller/orders/${order?.id}/advance`, { method: "POST", user: seller, body: { status: "arrived" } });
+    check("saut d'étape refusé (409)", r.status === 409, `statut ${r.status}`);
+    r = await api(`/api/market/reseller/orders/${order?.id}/advance`, { method: "POST", user: seller, body: { status: "shipped" } });
+    check("le revendeur marque la commande expédiée", r.status === 200 && r.json?.status === "shipped", `statut ${r.status}`);
+    r = await api(`/api/market/reseller/orders/${order?.id}/advance`, { method: "POST", user: seller, body: { status: "arrived" } });
+    check("puis arrivée", r.status === 200 && r.json?.status === "arrived", `statut ${r.status}`);
+    r = await api(`/api/market/reseller/orders/${order?.id}/scan`, { method: "POST", user: seller });
+    check("scan : prête au retrait", r.status === 200 && r.json?.status === "ready_for_pickup", `statut ${r.status}`);
+    r = await api(`/api/market/reseller/orders/${order?.id}/deliver`, { method: "POST", user: seller, body: { recipient_name: "Client E2E" } });
+    check("remise : livrée, sans toucher au paiement", r.status === 200 && r.json?.status === "delivered" && r.json?.paid === true && r.json?.total === 8000, `statut ${r.status}`);
+    const pickup = await seller.client.from("market_pickup_records").insert({ order_id: order?.id, tracking_code: "FAUX", status: "delivered" }).select();
+    check("écriture directe du suivi de retrait refusée (clé anon)", Boolean(pickup.error), "acceptée !");
+
+    console.log("\n7. Transfert vers un destinataire réel");
+    const { data: sellerMember, error: sellerMemberError } = await admin
+      .from("members")
+      .insert({ organization_id: created.orgId, user_id: seller.id, name: "Revendeur E2E", status: "active", role: "member" })
+      .select()
+      .single();
+    if (sellerMemberError) throw new Error(sellerMemberError.message);
+
+    r = await api("/api/pay/recipients", { user: buyer });
+    const recipient = (r.json ?? []).find((x) => x.member_id === sellerMember.id);
+    check(
+      "liste des destinataires : membres des organisations communes, sans contact",
+      r.status === 200 && recipient?.user_id === seller.id && !("phone" in recipient) && !("email" in recipient),
+      `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`,
+    );
+    check("l'utilisateur n'est pas dans sa propre liste", !(r.json ?? []).some((x) => x.user_id === buyer.id));
+
+    const buyerBeforeTransfer = await balance(buyer);
+    const sellerBeforeTransfer = await balance(seller);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_member: "Revendeur E2E", amount: 1000 } });
+    check("transfert vers un libellé libre refusé (400)", r.status === 400, `statut ${r.status}`);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_member_id: sellerMember.id, amount: 1000 } });
+    check("transfert vers un membre", r.status === 200 && r.json?.type === "transfer" && r.json?.status === "confirmed", `statut ${r.status} ${JSON.stringify(r.json)}`);
+    check("émetteur débité de 1 000", (await balance(buyer)) === buyerBeforeTransfer - 1000, `solde ${await balance(buyer)}`);
+    check("destinataire crédité de 1 000", (await balance(seller)) === sellerBeforeTransfer + 1000, `solde ${await balance(seller)}`);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_user_id: buyer.id, amount: 100 } });
+    check("transfert vers soi-même refusé (400)", r.status === 400, `statut ${r.status}`);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_user_id: crypto.randomUUID(), amount: 100 } });
+    check("destinataire inconnu refusé (404)", r.status === 404, `statut ${r.status}`);
+    r = await api("/api/pay/transfer", { method: "POST", user: seller, body: { to_member_id: memberId, amount: 100 } });
+    check("membre d'une organisation non commune refusé (404)", r.status === 404, `statut ${r.status}`);
+    r = await api("/api/pay/transfer", { method: "POST", user: buyer, body: { to_member_id: sellerMember.id, amount: 100000000 } });
+    check("transfert au-delà du solde refusé (400)", r.status === 400, `statut ${r.status}`);
+
+    console.log("\n8. Commandes groupées et investissement");
+    r = await api("/api/market/orders/group", { method: "POST", user: buyer, body: { product_id: product.id, min_participants: 2, deadline: "2099-12-31", unit_price: 1 } });
+    const group = r.json;
+    check("commande groupée créée au prix du produit (prix client ignoré)", r.status === 200 && group?.unit_price === 4000 && group?.status === "open", `statut ${r.status} ${JSON.stringify(group)?.slice(0, 160)}`);
+    const forgedGroup = await seller.client.from("market_group_orders").update({ unit_price: 1, status: "closed" }).eq("id", group?.id).select();
+    check("modification directe d'une commande groupée refusée (clé anon)", Boolean(forgedGroup.error) || (forgedGroup.data ?? []).length === 0, "acceptée !");
+    r = await api(`/api/market/orders/group/${group?.id}/join`, { method: "POST", user: seller });
+    check("participation : commande confirmée au minimum atteint", r.status === 200 && r.json?.status === "confirmed" && r.json?.participants === 2, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+
+    r = await api("/api/market/investments", { method: "POST", user: buyer, body: { name: `Projet E2E ${RUN}`, sector: "agriculture", target_amount: 5000, profit_sharing_rules: "Règles v1" } });
+    created.projectId = r.json?.id ?? null;
+    check("projet d'investissement créé", r.status === 200 && created.projectId && r.json?.rules_locked === false, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+    const forgedProject = await seller.client.from("market_investment_projects").update({ raised_amount: 999999, profit_sharing_rules: "piraté" }).eq("id", created.projectId).select();
+    check("modification directe d'un projet refusée (clé anon)", Boolean(forgedProject.error) || (forgedProject.data ?? []).length === 0, "acceptée !");
+    const forgedRules = await seller.client.rpc("market_update_investment_rules", { p_project_id: created.projectId, p_profit_sharing_rules: "piraté" });
+    check("règles de répartition réservées au créateur", forgedRules.error?.code === "PY006", forgedRules.error?.code ?? "acceptée !");
+    r = await api(`/api/market/investments/${created.projectId}/invest`, { method: "POST", user: seller, body: { amount: 1000 } });
+    check("investissement enregistré, règles verrouillées", r.status === 200 && r.json?.raised_amount === 1000 && r.json?.rules_locked === true && r.json?.my_contribution === 1000, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 160)}`);
+    const lockedRules = await buyer.client.rpc("market_update_investment_rules", { p_project_id: created.projectId, p_profit_sharing_rules: "Règles v2" });
+    check("règles figées après le premier investissement", lockedRules.error?.code === "PY019", lockedRules.error?.code ?? "acceptée !");
+
+    const expectedBalance = await balance(buyer);
+
+    console.log("\n9. Écrans (navigateur)");
     const browser = await chromium.launch();
     try {
       const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
@@ -218,7 +338,7 @@ async function main() {
       await page.goto(`${BASE_URL}/dashboard/pay`);
       await page.waitForTimeout(6000);
       const payText = await page.locator("main").innerText();
-      check("écran Pay : solde réel affiché", payText.replace(/\s/g, "").includes(String(credited - 8000)), payText.slice(0, 200));
+      check("écran Pay : solde réel affiché", payText.replace(/\s/g, "").includes(String(expectedBalance)), payText.slice(0, 200));
       if (SCREENSHOT_DIR) await page.screenshot({ path: `${SCREENSHOT_DIR}/e2e-pay.png` });
 
       await page.goto(`${BASE_URL}/dashboard/organizations/${created.orgId}/audit`);
@@ -232,7 +352,20 @@ async function main() {
       await browser.close();
     }
   } finally {
-    console.log("\n6. Suppression des données de test");
+    console.log("\n10. Suppression des données de test");
+    if (created.projectId) {
+      const { error } = await admin.from("market_investment_projects").delete().eq("id", created.projectId);
+      console.log(`  projet d'investissement : ${error ? `ÉCHEC ${error.message}` : "supprimé"}`);
+    }
+    // Les commissions de test sont retirées du portefeuille plateforme.
+    const platformNow = await platformBalance();
+    if (platformBefore !== null && platformNow !== null && platformNow !== platformBefore) {
+      const { error } = await admin
+        .from("pay_wallets")
+        .update({ balance: platformBefore, last_known_balance: platformBefore })
+        .eq("type", "platform");
+      console.log(`  portefeuille plateforme : ${error ? `ÉCHEC ${error.message}` : `remis à ${platformBefore}`}`);
+    }
     if (created.orgId) {
       const { error } = await admin.from("organizations").delete().eq("id", created.orgId);
       console.log(`  organisation : ${error ? `ÉCHEC ${error.message}` : "supprimée"}`);

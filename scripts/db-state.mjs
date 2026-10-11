@@ -25,6 +25,8 @@ export const MIGRATION_MARKERS = {
   "0017_wallet_integrity.sql": [{ function: "pay_withdraw" }, { function: "pay_ensure_wallet" }, { noPolicy: ["pay_wallets", "pay_wallets_update"] }],
   "0018_activity_audit.sql": [{ table: "audit_events" }, { function: "audit_log_event" }],
   "0019_market_topup_integrity.sql": [{ column: ["organizations", "created_by"] }, { function: "pay_confirm_topup" }, { function: "market_create_order" }],
+  "0020_validate_wallet_balance.sql": [{ validatedConstraint: "pay_wallets_balance_non_negative" }],
+  "0021_market_wallet_hardening.sql": [{ function: "pay_credit_platform" }, { function: "market_join_group_order" }, { column: ["market_investment_projects", "created_by"] }],
 };
 
 export function pgClient() {
@@ -83,6 +85,12 @@ async function checkMarker(client, marker) {
     return {
       label: `contrainte ${marker.constraint}`,
       ok: await exists(client, "select 1 from pg_constraint c join pg_namespace n on n.oid = c.connamespace where n.nspname = 'public' and c.conname = $1", [marker.constraint]),
+    };
+  }
+  if (marker.validatedConstraint) {
+    return {
+      label: `contrainte ${marker.validatedConstraint} validée`,
+      ok: await exists(client, "select 1 from pg_constraint c join pg_namespace n on n.oid = c.connamespace where n.nspname = 'public' and c.conname = $1 and c.convalidated", [marker.validatedConstraint]),
     };
   }
   if (marker.noPolicy) {

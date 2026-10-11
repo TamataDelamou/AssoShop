@@ -56,6 +56,7 @@ function parseBundle(data: AdminBundle): AdminBundle {
     })),
     investments: data.investments,
     commissions: data.commissions,
+    platform_wallet: data.platform_wallet ?? null,
     plans: data.plans,
     invoices: data.invoices.map((i) => ({
       ...i,

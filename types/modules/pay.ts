@@ -115,10 +115,22 @@ export interface WithdrawPayload {
   amount: number;
 }
 
+// Le destinataire est un membre d'une organisation commune (to_member_id)
+// ou un identifiant utilisateur (to_user_id), jamais un libellé libre.
 export interface TransferPayload {
   from_wallet_id: string;
-  to_member: string;
+  to_member_id?: string;
+  to_user_id?: string;
   amount: number;
+}
+
+// Destinataire possible d'un transfert (membre d'une organisation commune).
+export interface TransferRecipient {
+  member_id: string;
+  user_id: string;
+  name: string;
+  organization_id: string;
+  organization_name: string;
 }
 
 export interface AddPaymentMethodPayload {

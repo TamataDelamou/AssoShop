@@ -286,6 +286,8 @@ export interface AdminBundle {
   moderation: ModerationItem[];
   investments: InvestmentProject[];
   commissions: CommissionRule[];
+  // Portefeuille plateforme (commissions encaissées) ; null s'il n'existe pas.
+  platform_wallet: { balance: number; currency: string } | null;
   plans: SubscriptionPlan[];
   invoices: SubscriptionInvoice[];
   config: PlatformConfig;

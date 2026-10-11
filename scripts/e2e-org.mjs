@@ -2,10 +2,10 @@ import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const REF = "fpxgbykozzyybwhlltlo";
-const BASE_URL = "http://localhost:3100";
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3100";
 const EMAIL = "e2e.org@assoshop.local";
-const PASSWORD = "AssoShopE2E!2026";
+// Mot de passe aléatoire à chaque exécution : aucun secret de compte en dur.
+const PASSWORD = `E2e!${crypto.randomUUID()}`;
 
 function loadEnv() {
   const path = fileURLToPath(new URL("../.env.local", import.meta.url));
@@ -19,6 +19,7 @@ function loadEnv() {
 }
 
 const env = loadEnv();
+const REF = new URL(env.NEXT_PUBLIC_SUPABASE_URL).hostname.split(".")[0];
 const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });

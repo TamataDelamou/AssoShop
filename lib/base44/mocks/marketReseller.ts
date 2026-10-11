@@ -3,6 +3,7 @@ import type {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from "axios";
+import { canAdvanceOrder, isManualAdvanceStatus } from "@/lib/market-orders";
 import {
   CreateResellerApplicationPayload,
   OrderStatus,
@@ -49,6 +50,7 @@ const PRODUCTS_URL = /^\/market\/reseller\/products$/;
 const PRODUCT_ITEM_URL = /^\/market\/reseller\/products\/([^/]+)$/;
 const SCAN_URL = /^\/market\/reseller\/orders\/([^/]+)\/scan$/;
 const DELIVER_URL = /^\/market\/reseller\/orders\/([^/]+)\/deliver$/;
+const ADVANCE_URL = /^\/market\/reseller\/orders\/([^/]+)\/advance$/;
 const SETTINGS_URL = /^\/market\/reseller\/settings$/;
 
 let application: ApplicationDTO | null = null;
@@ -273,6 +275,20 @@ function scanParcel(config: InternalAxiosRequestConfig): OrderDTO | null {
   return clone(order);
 }
 
+// Expédiée puis arrivée : une étape à la fois, sur une commande payée.
+function advanceOrder(config: InternalAxiosRequestConfig): OrderDTO | null {
+  const match = config.url?.match(ADVANCE_URL);
+  if (!match) return null;
+  const order = marketOrders.find((o) => o.id === match[1]);
+  const payload = (config.data ?? {}) as { status?: unknown };
+  if (!order || !isManualAdvanceStatus(payload.status)) return null;
+  if (!canAdvanceOrder(order, payload.status)) return null;
+
+  order.status = payload.status;
+  order.updated_at = new Date().toISOString();
+  return clone(order);
+}
+
 function deliverParcel(config: InternalAxiosRequestConfig): OrderDTO | null {
   const match = config.url?.match(DELIVER_URL);
   if (!match) return null;
@@ -324,6 +340,9 @@ export function marketResellerMockAdapter(
   }
   if (method === "post" && SCAN_URL.test(url)) {
     return async (cfg) => toResponse(scanParcel(cfg));
+  }
+  if (method === "post" && ADVANCE_URL.test(url)) {
+    return async (cfg) => toResponse(advanceOrder(cfg));
   }
   if (method === "post" && DELIVER_URL.test(url)) {
     return async (cfg) => toResponse(deliverParcel(cfg));

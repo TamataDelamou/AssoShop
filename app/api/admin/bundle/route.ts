@@ -68,6 +68,13 @@ export async function GET() {
       if (r.error) throw r.error;
     }
 
+    // Portefeuille plateforme : lisible uniquement avec le client service_role.
+    const { data: platformWallet } = await supabase
+      .from("pay_wallets")
+      .select("balance, currency")
+      .eq("type", "platform")
+      .maybeSingle();
+
     const [
       orgCountRes,
       groupCountRes,
@@ -244,6 +251,7 @@ export async function GET() {
         currency: p.currency,
       })),
       commissions: commissions.data ?? [],
+      platform_wallet: platformWallet ?? null,
       plans: plans.data ?? [],
       invoices: invoices.data ?? [],
       config: platformConfig,
