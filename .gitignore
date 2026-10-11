@@ -46,3 +46,6 @@ next-env.d.ts
 
 # deep copilot (tooling artifacts)
 .deep-copilot/
+
+# sauvegardes de base de données (jamais commitées)
+/backups/
