@@ -49,6 +49,33 @@ export function getSyncQueue(): OfflineOperation[] {
   return readQueue();
 }
 
+// Instantané stable pour useSyncExternalStore : la même référence est renvoyée
+// tant que le contenu stocké n'a pas changé.
+const EMPTY_QUEUE: OfflineOperation[] = [];
+let snapshotRaw: string | null = null;
+let snapshotQueue: OfflineOperation[] = EMPTY_QUEUE;
+
+export function getSyncQueueSnapshot(): OfflineOperation[] {
+  if (typeof window === "undefined") return EMPTY_QUEUE;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(QUEUE_KEY);
+  } catch {
+    raw = null;
+  }
+  if (raw !== snapshotRaw) {
+    snapshotRaw = raw;
+    snapshotQueue = raw ? readQueue() : EMPTY_QUEUE;
+  }
+  return snapshotQueue;
+}
+
+// Rendu serveur et hydratation : file vide (le stockage local n'est lu
+// qu'après le montage).
+export function getServerSyncQueueSnapshot(): OfflineOperation[] {
+  return EMPTY_QUEUE;
+}
+
 export function hasPendingSync(module?: string): boolean {
   const queue = readQueue();
   return module

@@ -42,11 +42,9 @@ export function useOfflineQuery<T>(
   } = options;
   const online = useNetworkStatus();
 
-  const [data, setData] = useState<T | null>(() => {
-    const entry = readCacheEntry<T>(key);
-    if (!entry) return null;
-    return parse ? parse(entry.value) : entry.value;
-  });
+  // Le cache est lu après le montage (effet ci-dessous), jamais au premier
+  // rendu : serveur et client rendent ainsi le même état initial.
+  const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [fromCache, setFromCache] = useState(false);

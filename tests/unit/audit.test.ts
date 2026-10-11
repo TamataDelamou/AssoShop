@@ -26,18 +26,26 @@ import {
   AUDIT_PERIOD_LABELS,
 } from "@/utils/constants";
 
-const MIGRATION = readFileSync(
-  fileURLToPath(
-    new URL("../../supabase/migrations/0018_activity_audit.sql", import.meta.url),
-  ),
-  "utf8",
-);
+function readMigration(name: string): string {
+  return readFileSync(
+    fileURLToPath(new URL(`../../supabase/migrations/${name}`, import.meta.url)),
+    "utf8",
+  );
+}
 
-// Liste des event_type autorisés par la contrainte CHECK de la migration.
-function migrationEventTypes(): string[] {
-  const match = /check \(event_type in \(([\s\S]*?)\)\)/.exec(MIGRATION);
-  if (!match) throw new Error("Contrainte event_type introuvable dans 0018");
+const MIGRATION = readMigration("0018_activity_audit.sql");
+// 0019 redéfinit la contrainte event_type : c'est elle qui fait foi.
+const MIGRATION_0019 = readMigration("0019_market_topup_integrity.sql");
+
+function eventTypesIn(sql: string): string[] {
+  const match = /check \(event_type in \(([\s\S]*?)\)\)/.exec(sql);
+  if (!match) throw new Error("Contrainte event_type introuvable");
   return Array.from(match[1].matchAll(/'([^']+)'/g), (m) => m[1]);
+}
+
+// Liste des event_type autorisés par la contrainte CHECK en vigueur.
+function migrationEventTypes(): string[] {
+  return eventTypesIn(MIGRATION_0019);
 }
 
 function row(overrides: Partial<AuditEventRow> = {}): AuditEventRow {
@@ -64,6 +72,11 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
     );
   });
 
+  it("ne retire aucun event_type déclaré par 0018", () => {
+    const current = migrationEventTypes();
+    for (const type of eventTypesIn(MIGRATION)) expect(current).toContain(type);
+  });
+
   it("ne contient aucun doublon dans la migration", () => {
     const types = migrationEventTypes();
     expect(new Set(types).size).toBe(types.length);
@@ -72,13 +85,16 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
   it("émet uniquement des event_type déclarés dans les triggers", () => {
     // Littéraux complets ('loan.installment_repaid') et préfixes dynamiques
     // ('pay.' || new.type) utilisés dans les fonctions de trigger.
-    const body = MIGRATION.slice(MIGRATION.indexOf("-- 3. TRIGGERS MÉTIER"));
+    const body =
+      MIGRATION.slice(MIGRATION.indexOf("-- 3. TRIGGERS MÉTIER")) +
+      MIGRATION_0019.slice(MIGRATION_0019.indexOf("-- Commande marché payée."));
     const declared = Object.values(AuditEventType) as string[];
     const literals = Array.from(
       body.matchAll(/'([a-z_]+\.[a-z_]+)'/g),
       (m) => m[1],
     );
-    expect(literals.length).toBeGreaterThan(0);
+    expect(literals).toContain("market.order_paid");
+    expect(literals).toContain("pay.topup_confirmed");
     for (const literal of literals) expect(declared).toContain(literal);
 
     const prefixes = Array.from(body.matchAll(/'([a-z_]+\.)' \|\|/g), (m) => m[1]);
@@ -101,8 +117,13 @@ describe("Journal d'audit : cohérence migration / constantes", () => {
   it("exclut les événements du portefeuille personnel du filtre organisation", () => {
     expect(AUDIT_ORG_EVENT_TYPES).not.toContain(AuditEventType.PAY_TOPUP);
     expect(AUDIT_ORG_EVENT_TYPES).toContain(AuditEventType.MEMBER_ROLE_CHANGED);
+    expect(AUDIT_ORG_EVENT_TYPES).not.toContain(AuditEventType.MARKET_ORDER_PAID);
+    const personal = Object.values(AuditEventType).filter(
+      (type) => type.startsWith("pay.") || type.startsWith("market."),
+    );
+    expect(personal).toHaveLength(6);
     expect(AUDIT_ORG_EVENT_TYPES).toHaveLength(
-      Object.values(AuditEventType).length - 4,
+      Object.values(AuditEventType).length - personal.length,
     );
   });
 
