@@ -88,6 +88,8 @@ export const ERROR_MESSAGES = {
   PIN_INCORRECT: "Code PIN incorrect, veuillez réessayer",
   OTP_EXPIRED: "Le code a expiré, veuillez en demander un nouveau",
   OTP_INCORRECT: "Code incorrect, veuillez réessayer",
+  ACCOUNT_REQUIRED:
+    "Aucun compte n'existe avec cet identifiant. Créez d'abord votre compte sur la page de connexion de l'application.",
   NETWORK_ERROR: "Erreur réseau, vérifiez votre connexion",
   UNKNOWN_ERROR: "Une erreur est survenue, réessayez plus tard",
 };

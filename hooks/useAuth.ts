@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { buildOtpRequest, isSignupRefused } from "@/lib/auth-otp";
 import { supabaseClient } from "@/lib/supabase/client";
 import { getErrorMessage } from "@/lib/utils";
 import { useRouter } from "next/navigation";
@@ -12,7 +13,16 @@ import {
 } from "@/types/modules/auth";
 import { AUTH_CONFIG, ERROR_MESSAGES } from "@/utils/constants";
 
-export function useAuth(redirectTo = "/dashboard") {
+interface UseAuthOptions {
+  // Vrai : une demande de code ou de lien peut créer le compte (inscription).
+  // Faux par défaut : le compte doit déjà exister (back-office).
+  allowSignup?: boolean;
+}
+
+export function useAuth(
+  redirectTo = "/dashboard",
+  { allowSignup = false }: UseAuthOptions = {},
+) {
   const [method, setMethod] = useState<AuthMethod>(AuthMethod.EMAIL);
   const [step, setStep] = useState<AuthStep>(AuthStep.INPUT_CREDENTIALS);
   const [identifier, setIdentifier] = useState("");
@@ -57,43 +67,23 @@ export function useAuth(redirectTo = "/dashboard") {
     clearError();
 
     try {
-      if (method === AuthMethod.PHONE) {
-        if (channel === ChannelType.SMS) {
-          const { error } = await supabaseClient.auth.signInWithOtp({
-            phone: identifier,
-            options: { channel: "sms" },
-          });
-          if (error) throw error;
-        } else if (channel === ChannelType.WHATSAPP) {
-          const { error } = await supabaseClient.auth.signInWithOtp({
-            phone: identifier,
-            options: { channel: "whatsapp" },
-          });
-          if (error) throw error;
-        } else {
-          throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
+      // La création du compte dépend de la page (allowSignup), jamais du
+      // canal : voir lib/auth-otp.ts.
+      const request = buildOtpRequest({
+        method,
+        channel,
+        identifier,
+        allowSignup,
+        redirectUrl: window.location.origin + redirectTo,
+      });
+      if (!request) throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
+
+      const { error } = await supabaseClient.auth.signInWithOtp(request);
+      if (error) {
+        if (!allowSignup && isSignupRefused(error)) {
+          throw new Error(ERROR_MESSAGES.ACCOUNT_REQUIRED);
         }
-      } else {
-        // Email
-        if (channel === ChannelType.EMAIL_OTP) {
-          // OTP par email
-          const { error } = await supabaseClient.auth.signInWithOtp({
-            email: identifier,
-            options: { shouldCreateUser: false },
-          });
-          if (error) throw error;
-        } else if (channel === ChannelType.EMAIL_MAGIC_LINK) {
-          // Magic Link
-          const { error } = await supabaseClient.auth.signInWithOtp({
-            email: identifier,
-            options: {
-              emailRedirectTo: window.location.origin + redirectTo,
-            },
-          });
-          if (error) throw error;
-        } else {
-          throw new Error(ERROR_MESSAGES.UNKNOWN_ERROR);
-        }
+        throw error;
       }
 
       setStep(AuthStep.OTP_VERIFICATION);
@@ -104,7 +94,7 @@ export function useAuth(redirectTo = "/dashboard") {
       setStatus(AuthStatus.ERROR);
       setError(getErrorMessage(err, ERROR_MESSAGES.UNKNOWN_ERROR));
     }
-  }, [identifier, method, channel, clearError, redirectTo]);
+  }, [identifier, method, channel, clearError, redirectTo, allowSignup]);
 
   // Vérifier le code OTP
   const verifyOtp = useCallback(async () => {

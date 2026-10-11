@@ -33,7 +33,8 @@ export default function AdminLoginPage() {
     verifyOtp,
     createPin,
     clearError,
-  } = useAuth("/admin");
+    // Back-office : aucune inscription ici, le compte doit déjà exister.
+  } = useAuth("/admin", { allowSignup: false });
 
   useEffect(() => {
     if (resendCountdown > 0) {

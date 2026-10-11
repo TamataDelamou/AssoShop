@@ -163,9 +163,62 @@ Les utilisateurs se connectent avec un code reçu par e-mail (ou par SMS / Whats
    - **Site URL** : l'adresse de votre site, par exemple `https://app.votre-domaine.org` ;
    - **Redirect URLs** : ajoutez `https://app.votre-domaine.org/**`.
 2. **E-mails** — *Authentication → Emails → SMTP Settings* : activez **Custom SMTP** et saisissez les paramètres fournis par votre service d'envoi d'e-mails (hôte, port, identifiant, mot de passe, adresse d'expéditeur). Sans ce réglage, Supabase n'envoie que quelques e-mails par heure : suffisant pour un essai, pas pour un service ouvert.
-3. **Modèles d'e-mails** — *Authentication → Emails → Templates* : relisez le texte du message de code de connexion et mettez-le en français, au nom d'AssoShop.
+3. **Modèles d'e-mails — étape obligatoire.** Par défaut, Supabase envoie un **lien** de connexion, alors que l'application demande un **code à 6 chiffres**. Tant que les modèles ne sont pas corrigés, personne ne peut saisir de code. Voir [5.1 — Modèles d'e-mails](#51--modèles-de-mails-avec-le-code-à-6-chiffres) ci-dessous.
 4. **Téléphone** (si vous ouvrez la connexion par SMS ou WhatsApp) — *Authentication → Sign In / Providers → Phone* : renseignez le fournisseur (Twilio). Sinon, laissez désactivé : seule la connexion par e-mail fonctionnera.
 5. Faites un essai à l'étape 8 : c'est en créant votre propre compte que vous vérifierez la réception du code.
+
+### 5.1 — Modèles d'e-mails avec le code à 6 chiffres
+
+Dans Supabase, ouvrez **Authentication → Emails → Templates**. Deux modèles sont à remplacer : **Confirm signup** (envoyé à la première connexion, quand le compte est créé) et **Magic Link** (envoyé aux connexions suivantes). Pour chacun, remplacez le champ **Subject** et tout le contenu du champ **Body** par les textes ci-dessous, puis cliquez sur **Save**.
+
+Ne modifiez pas les mots entre doubles accolades (`{{ .Token }}`, `{{ .ConfirmationURL }}`) : Supabase les remplace par le code et par le lien propres à chaque utilisateur.
+
+**Modèle « Confirm signup »**
+
+Subject :
+
+```
+Votre code AssoShop : {{ .Token }}
+```
+
+Body :
+
+```html
+<h2>Bienvenue sur AssoShop</h2>
+<p>Pour confirmer votre inscription, saisissez ce code dans l'application :</p>
+<p style="font-size:32px;font-weight:bold;letter-spacing:6px;margin:24px 0">{{ .Token }}</p>
+<p>Ce code est valable une heure et ne peut servir qu'une fois.</p>
+<p>Vous pouvez aussi confirmer en ouvrant ce lien : <a href="{{ .ConfirmationURL }}">confirmer mon inscription</a>.</p>
+<p>Si vous n'êtes pas à l'origine de cette demande, ignorez ce message : aucun compte ne sera activé.</p>
+<p>L'équipe AssoShop</p>
+```
+
+**Modèle « Magic Link »**
+
+Subject :
+
+```
+Votre code de connexion AssoShop : {{ .Token }}
+```
+
+Body :
+
+```html
+<h2>Connexion à AssoShop</h2>
+<p>Pour vous connecter, saisissez ce code dans l'application :</p>
+<p style="font-size:32px;font-weight:bold;letter-spacing:6px;margin:24px 0">{{ .Token }}</p>
+<p>Ce code est valable une heure et ne peut servir qu'une fois.</p>
+<p>Vous pouvez aussi vous connecter en ouvrant ce lien : <a href="{{ .ConfirmationURL }}">me connecter</a>.</p>
+<p>Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et ne communiquez ce code à personne.</p>
+<p>L'équipe AssoShop</p>
+```
+
+Deux réglages à vérifier au même endroit, dans **Authentication → Sign In / Providers → Email** :
+
+- **Email OTP Length** vaut **6** : l'application n'accepte que des codes à 6 chiffres ;
+- **Email OTP Expiration** vaut **3600** secondes (une heure), pour correspondre au texte des e-mails. Si vous choisissez une autre durée, adaptez la phrase « valable une heure ».
+
+Vérification : à l'étape 8, l'e-mail reçu doit afficher un code à 6 chiffres, et ce code doit vous connecter.
 
 ---
 
@@ -267,6 +320,7 @@ Cochez chaque ligne. N'ouvrez pas le service s'il en reste une.
 
 **Connexion**
 
+- [ ] L'e-mail de connexion contient un **code à 6 chiffres**, en français, et ce code vous a connecté (étape 5.1).
 - [ ] Vous avez reçu le code de connexion par e-mail en moins d'une minute, depuis l'adresse d'expéditeur d'AssoShop, et il n'est pas arrivé dans les indésirables.
 - [ ] *Authentication → URL Configuration* dans Supabase contient l'adresse définitive.
 
@@ -311,6 +365,7 @@ Cochez chaque ligne. N'ouvrez pas le service s'il en reste une.
 | `ÉCHEC` pendant l'essai à blanc | Une migration ou un test ne passe pas | Rien n'a été modifié. Transmettez le message complet au mainteneur |
 | `Fichier(s) modifié(s) depuis leur application` | Un fichier de migration a été changé après coup | Ne forcez rien. Prévenez le mainteneur |
 | `Aucun utilisateur avec l'email …` (étape 8) | Le compte n'existe pas encore dans cette base | Créez d'abord le compte sur le site, puis relancez |
+| L'e-mail contient un lien mais pas de code | Modèles d'e-mails de Supabase non corrigés | Reprenez l'étape 5.1 |
 | Le code de connexion n'arrive pas | Envoi d'e-mails non configuré | Reprenez l'étape 5, point 2 |
 | Les tâches automatiques répondent `401` | `CRON_SECRET` absent ou différent | Vérifiez la variable chez l'hébergeur, puis redéployez |
 | Les tâches automatiques répondent `404` sur `/api/cron/investments/settle` | `CRON_SECRET` n'existe pas | Créez la variable, puis redéployez |
