@@ -25,49 +25,12 @@ export async function ensurePersonalWallet(
     .maybeSingle();
   if (existing) return existing as PersonalWallet;
 
-  const { data: created, error } = await supabase
-    .from("pay_wallets")
-    .insert({
-      user_id: userId,
-      type: "personal",
-      label: "",
-      currency: "GNF",
-      balance: 0,
-      last_known_balance: 0,
-    })
-    .select()
-    .single();
+  // Création via la fonction SQL pay_ensure_wallet : le client n'a plus le
+  // droit d'écrire dans pay_wallets (migration 0017).
+  const { data: created, error } = await supabase.rpc("pay_ensure_wallet");
+  if (error) throw error;
 
-  if (error) {
-    // Course possible : un autre appel a déjà créé le portefeuille.
-    const { data: retry } = await supabase
-      .from("pay_wallets")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("type", "personal")
-      .maybeSingle();
-    if (retry) return retry as PersonalWallet;
-    throw error;
-  }
-
-  return created as PersonalWallet;
-}
-
-// Résout le portefeuille visé par un wallet_id, ou le portefeuille personnel
-// par défaut lorsque aucun identifiant n'est fourni.
-export async function getWallet(
-  supabase: SupabaseClient,
-  userId: string,
-  walletId?: string | null,
-): Promise<PersonalWallet | null> {
-  if (walletId) {
-    const { data } = await supabase
-      .from("pay_wallets")
-      .select("*")
-      .eq("id", walletId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    return (data as PersonalWallet) ?? null;
-  }
-  return ensurePersonalWallet(supabase, userId);
+  const wallet = Array.isArray(created) ? created[0] : created;
+  if (!wallet) throw new Error("Portefeuille introuvable");
+  return wallet as PersonalWallet;
 }
