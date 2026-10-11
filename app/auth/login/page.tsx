@@ -52,7 +52,9 @@ export default function LoginPage() {
     createPin,
     verifyPin,
     clearError,
-  } = useAuth();
+    // Page utilisateur : demander un code ou un lien crée le compte s'il
+    // n'existe pas encore (inscription), quel que soit le canal.
+  } = useAuth("/dashboard", { allowSignup: true });
 
   // Gestion du compte à rebours pour le renvoi
   useEffect(() => {
