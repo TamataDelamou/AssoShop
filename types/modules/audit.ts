@@ -3,12 +3,14 @@
 // ============================================
 
 // Doit rester identique à la contrainte event_type de
-// supabase/migrations/0018_activity_audit.sql (vérifié par tests/unit/audit.test.ts).
+// supabase/migrations (0018, étendue par 0019 ; vérifié par tests/unit/audit.test.ts).
 export enum AuditEventType {
   PAY_PAYMENT = "pay.payment",
   PAY_TOPUP = "pay.topup",
+  PAY_TOPUP_CONFIRMED = "pay.topup_confirmed",
   PAY_WITHDRAWAL = "pay.withdrawal",
   PAY_TRANSFER = "pay.transfer",
+  MARKET_ORDER_PAID = "market.order_paid",
   CONTRIBUTION_VALIDATED = "contribution.validated",
   CONTRIBUTION_REJECTED = "contribution.rejected",
   LOAN_APPROVED = "loan.approved",
@@ -32,6 +34,7 @@ export enum AuditEventType {
 
 export enum AuditEntityType {
   PAY_TRANSACTION = "pay_transaction",
+  MARKET_ORDER = "market_order",
   CONTRIBUTION = "contribution",
   LOAN = "loan",
   LOAN_INSTALLMENT = "loan_installment",

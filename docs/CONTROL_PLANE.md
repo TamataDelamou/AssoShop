@@ -120,7 +120,8 @@ Les événements de la table `audit_events` (migration `0018`) sont écrits par 
 
 | Domaine | `event_type` |
 | --- | --- |
-| Portefeuille (sans organisation) | `pay.payment`, `pay.topup`, `pay.withdrawal`, `pay.transfer` |
+| Portefeuille (sans organisation) | `pay.payment`, `pay.topup` (demande), `pay.topup_confirmed` (crédit confirmé par le serveur, migration `0019`), `pay.withdrawal`, `pay.transfer` |
+| Marché (sans organisation) | `market.order_paid` (migration `0019`) |
 | Cotisations | `contribution.validated`, `contribution.rejected` |
 | Prêts | `loan.approved`, `loan.rejected`, `loan.repaid`, `loan.installment_repaid` |
 | Groupes financiers | `group_payment.validated` |
@@ -195,5 +196,5 @@ Depuis la migration `0018`, les actions métier demandées par le cahier v6 (§1
 
 - **Actions antérieures à la migration** : aucune reprise d'historique, le journal démarre à l'application de `0018`.
 - **Créations et versements directs** : seuls les changements de statut sont tracés (validation, rejet, remboursement…). Un versement de groupe ou une cotisation enregistrés directement à l'état final, sans passer par une validation, ne produisent pas d'événement.
-- **Modules non couverts** : Market (commandes, revendeurs), sanctions, élections et adhésions aux groupes ne sont pas encore reliés au journal.
+- **Modules non couverts** : Market hors paiement de commande (avancement logistique, annulation, revendeurs), sanctions, élections et adhésions aux groupes ne sont pas encore reliés au journal.
 - **Auteur** : `actor_id` est vide pour toute écriture faite avec la clé `service_role` (tâches serveur, scripts), l'identité de l'appelant n'étant alors pas connue de la base.

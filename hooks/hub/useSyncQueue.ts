@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import {
   clearSyncQueue,
-  getSyncQueue,
+  getServerSyncQueueSnapshot,
+  getSyncQueueSnapshot,
   OfflineOperation,
   processSyncQueue,
   subscribeSyncQueue,
@@ -13,17 +14,15 @@ import {
 export type ReplayHandler = (payload: unknown) => Promise<unknown>;
 
 export function useSyncQueue() {
-  const [queue, setQueue] = useState<OfflineOperation[]>(() => getSyncQueue());
+  // File lue après le montage seulement : le serveur rend une file vide, ce
+  // qui évite tout écart d'hydratation.
+  const queue: OfflineOperation[] = useSyncExternalStore(
+    subscribeSyncQueue,
+    getSyncQueueSnapshot,
+    getServerSyncQueueSnapshot,
+  );
   const [processing, setProcessing] = useState(false);
   const [results, setResults] = useState<SyncResult[] | null>(null);
-
-  const refresh = useCallback(() => {
-    setQueue(getSyncQueue());
-  }, []);
-
-  useEffect(() => {
-    return subscribeSyncQueue(refresh);
-  }, [refresh]);
 
   const process = useCallback(
     async (handlers: Record<string, ReplayHandler>) => {
@@ -32,7 +31,6 @@ export function useSyncQueue() {
       try {
         const res = await processSyncQueue(handlers);
         setResults(res);
-        setQueue(getSyncQueue());
         return res;
       } finally {
         setProcessing(false);
@@ -43,9 +41,8 @@ export function useSyncQueue() {
 
   const clear = useCallback(() => {
     clearSyncQueue();
-    setQueue([]);
     setResults(null);
   }, []);
 
-  return { queue, processing, results, process, clear, refresh };
+  return { queue, processing, results, process, clear };
 }

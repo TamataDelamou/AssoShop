@@ -32,9 +32,10 @@ export async function proxy(request: NextRequest) {
 }
 
 // Les appels inter-services du Control Plane GSG (sans cookie de session)
-// ne passent pas par le rafraîchissement de session Supabase.
+// et le webhook de confirmation des recharges ne passent pas par le
+// rafraîchissement de session Supabase.
 export const config = {
   matcher: [
-    "/((?!api/control-plane|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!api/control-plane|api/pay/topup/confirm|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

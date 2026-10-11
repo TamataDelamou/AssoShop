@@ -2127,9 +2127,11 @@ export const AUDIT_PERIOD_LABELS: Record<AuditPeriod, string> = {
 
 export const AUDIT_EVENT_LABELS: Record<AuditEventType, string> = {
   [AuditEventType.PAY_PAYMENT]: "Paiement",
-  [AuditEventType.PAY_TOPUP]: "Recharge du portefeuille",
+  [AuditEventType.PAY_TOPUP]: "Demande de recharge",
+  [AuditEventType.PAY_TOPUP_CONFIRMED]: "Recharge confirmée",
   [AuditEventType.PAY_WITHDRAWAL]: "Retrait",
   [AuditEventType.PAY_TRANSFER]: "Transfert",
+  [AuditEventType.MARKET_ORDER_PAID]: "Commande marché payée",
   [AuditEventType.CONTRIBUTION_VALIDATED]: "Cotisation validée",
   [AuditEventType.CONTRIBUTION_REJECTED]: "Cotisation rejetée",
   [AuditEventType.LOAN_APPROVED]: "Prêt approuvé",
@@ -2151,14 +2153,17 @@ export const AUDIT_EVENT_LABELS: Record<AuditEventType, string> = {
   [AuditEventType.SIGNATURE_REJECTED]: "Signature refusée",
 };
 
-// Préfixe des événements du portefeuille personnel : sans organisation, ils ne
-// figurent pas dans le journal d'une organisation.
-export const AUDIT_PERSONAL_EVENT_PREFIX = "pay.";
+// Préfixes des événements personnels (portefeuille, achats marché) : sans
+// organisation, ils ne figurent pas dans le journal d'une organisation.
+export const AUDIT_PERSONAL_EVENT_PREFIXES = ["pay.", "market."];
 
 // Types proposés dans le filtre de l'écran organisation.
 export const AUDIT_ORG_EVENT_TYPES: AuditEventType[] = Object.values(
   AuditEventType,
-).filter((type) => !type.startsWith(AUDIT_PERSONAL_EVENT_PREFIX));
+).filter(
+  (type) =>
+    !AUDIT_PERSONAL_EVENT_PREFIXES.some((prefix) => type.startsWith(prefix)),
+);
 
 // Champs affichés dans la colonne « Changement » (états avant / après).
 export const AUDIT_SNAPSHOT_FIELD_LABELS: Record<string, string> = {
