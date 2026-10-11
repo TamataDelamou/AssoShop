@@ -1720,6 +1720,9 @@ export const PAY_CONFIG = {
 };
 
 export const PAY_LABELS = {
+  TEST_MODE_BANNER: "Paiements en mode test",
+  TEST_MODE_BANNER_HINT:
+    "— aucune opération en argent réel (recharge, retrait Mobile Money) n'est ouverte.",
   PAGE_TITLE: "AssoShop Pay",
   PAGE_SUBTITLE: "Paiements, portefeuilles et réconciliation",
   TAB_WALLET: "Portefeuille",
@@ -1859,6 +1862,11 @@ export const HUB_CONFIG = {
 };
 
 export const HUB_LABELS = {
+  DELETE_ACCOUNT: "Supprimer mon compte",
+  DELETE_ACCOUNT_CONFIRM: "Confirmer la suppression",
+  DELETE_ACCOUNT_CANCEL: "Annuler",
+  DELETE_ACCOUNT_WARNING:
+    "Cette action est définitive. Si votre compte porte encore un solde, une contribution en séquestre, une commande non livrée ou une part dans un projet, il ne sera pas supprimé mais anonymisé : votre nom, votre e-mail et votre téléphone seront effacés et vous ne pourrez plus vous connecter.",
   PAGE_TITLE: "Hub Communautaire",
   PAGE_SUBTITLE: "Point d'entrée unique : associations, groupes, finances et services",
   TAB_HOME: "Accueil",
@@ -1911,6 +1919,7 @@ export const HUB_LABELS = {
 };
 
 export const HUB_MESSAGES = {
+  DELETE_ACCOUNT_ERROR: "Impossible de supprimer le compte pour le moment.",
   LOAD_ERROR: "Impossible de charger le Hub.",
   FAVORITE_ERROR: "Impossible de modifier les favoris.",
   SYNC_ERROR: "La synchronisation a échoué.",

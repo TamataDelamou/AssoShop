@@ -286,6 +286,9 @@ async function main() {
 
   // Nettoyage : le compte de test ne doit pas rester administrateur.
   await admin.from("platform_admins").delete().eq("user_id", userId);
+  // Un compte au solde non nul n'est plus supprimable (migration 0024) : son
+  // portefeuille de test part d'abord.
+  await admin.from("pay_wallets").delete().eq("user_id", userId);
   await admin.auth.admin.deleteUser(userId);
 
   console.log("\n=== Résultats E2E ===");

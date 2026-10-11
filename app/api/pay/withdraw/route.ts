@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthedContext } from "@/lib/api/auth";
+import { isRealMoneyBlocked, realMoneyBlockedResponse } from "@/lib/api/pay-real-money";
 import { parseAmount, payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
   const { supabase } = ctx;
+
+  // En production, aucun retrait vers Mobile Money tant que PAY_REAL_MONEY
+  // n'est pas activé (partenaire agréé non choisi) : le solde n'est pas débité.
+  if (isRealMoneyBlocked()) return realMoneyBlockedResponse();
 
   const payload = (await request.json().catch(() => null)) as {
     wallet_id?: string;

@@ -33,6 +33,9 @@ Copier `.env.example` vers `.env.local` puis renseigner les variables :
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clé `anon` du projet Supabase |
 | `CONTROL_PLANE_*`, `CRON_SECRET` | Reporting vers le Control Plane GSG (serveur uniquement, voir [docs/CONTROL_PLANE.md](./docs/CONTROL_PLANE.md)) |
 | `NEXT_PUBLIC_BASE44_API_URL` | URL de l'API métier (défaut : `/api`) |
+| `PAY_REAL_MONEY` | Garde-fou argent réel, désactivé par défaut (serveur uniquement) |
+
+Mise en production : suivre [docs/PRODUCTION.md](./docs/PRODUCTION.md).
 
 Appliquer les migrations SQL présentes dans `supabase/migrations/` à la base Supabase
 (elles créent notamment la table `user_profiles` pour le PIN).

@@ -17,6 +17,16 @@ import {
 import { HUB_MESSAGES } from "@/utils/constants";
 
 export const hubService = {
+  // Ferme le compte de l'utilisateur : supprimé s'il ne porte aucun
+  // engagement financier, anonymisé sinon (décision prise par le serveur).
+  async closeAccount(): Promise<{ action: "deleted" | "anonymized" }> {
+    const response = await base44Client.post("/account/delete");
+    if (!response.data?.action) {
+      throw new Error(HUB_MESSAGES.DELETE_ACCOUNT_ERROR);
+    }
+    return response.data;
+  },
+
   async getBundle(): Promise<HubBundle> {
     const response = await base44Client.get("/hub/bundle");
     return response.data;

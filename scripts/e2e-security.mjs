@@ -1,10 +1,11 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0023 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0024 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
 // marché payée et partagée, journal d'audit, puis stock, portefeuille
 // plateforme, transfert vers un destinataire réel, commandes groupées,
 // investissement payé (séquestre), annulation, avancement logistique et
 // candidature revendeur décidée par un administrateur de la plateforme, puis
-// dénouement des séquestres (remboursement, versement, bénéfices). Les
+// dénouement des séquestres (remboursement, versement, bénéfices) et
+// fermeture de compte (suppression ou anonymisation). Les
 // données de test sont supprimées à la fin (sauf audit_events, en ajout seul
 // par conception).
 //
@@ -111,6 +112,17 @@ async function escrowBalance(projectId) {
     .select("balance")
     .eq("type", "escrow")
     .eq("project_id", projectId)
+    .maybeSingle();
+  return data ? Number(data.balance) : null;
+}
+
+// Solde lu en base : reste disponible quand le compte n'a plus de session.
+async function walletBalance(userId) {
+  const { data } = await admin
+    .from("pay_wallets")
+    .select("balance")
+    .eq("type", "personal")
+    .eq("user_id", userId)
     .maybeSingle();
   return data ? Number(data.balance) : null;
 }
@@ -637,6 +649,8 @@ async function main() {
       await page.goto(`${BASE_URL}/dashboard`);
       await page.waitForTimeout(4000);
       check("tableau de bord accessible avec la session", page.url().includes("/dashboard"), page.url());
+      const bannerText = await page.locator("body").innerText();
+      check("bandeau « Paiements en mode test » affiché (PAY_REAL_MONEY désactivé)", bannerText.includes("Paiements en mode test"), bannerText.slice(0, 160));
 
       await page.goto(`${BASE_URL}/dashboard/pay`);
       await page.waitForTimeout(6000);
@@ -654,8 +668,88 @@ async function main() {
     } finally {
       await browser.close();
     }
+
+    console.log("\n12. Fermeture de compte : suppression ou anonymisation");
+    r = await api("/api/account/delete", { method: "POST" });
+    check("fermeture de compte refusée sans session (401)", r.status === 401, `statut ${r.status}`);
+    const forgedClose = await buyer.client.rpc("account_close", { p_user_id: seller.id });
+    check("fonction de fermeture refusée à l'utilisateur (clé anon)", Boolean(forgedClose.error), "acceptée !");
+
+    // Compte sans engagement : supprimé.
+    r = await api("/api/account/delete", { method: "POST", user: stranger });
+    const strangerAfter = await admin.auth.admin.getUserById(stranger.id);
+    check(
+      "compte sans engagement : supprimé",
+      r.status === 200 && r.json?.action === "deleted" && !strangerAfter.data?.user,
+      `statut ${r.status} ${JSON.stringify(r.json)}`,
+    );
+    if (!strangerAfter.data?.user) created.users = created.users.filter((id) => id !== stranger.id);
+
+    // Compte engagé (solde, contribution en séquestre) : anonymisé.
+    r = await api("/api/market/investments", { method: "POST", user: candidate, body: { name: `Projet en collecte E2E ${RUN}`, sector: "commerce", target_amount: 100000, profit_sharing_rules: "Règles", deadline: "2099-12-31" } });
+    const escrowProjectId = r.json?.id ?? null;
+    if (escrowProjectId) created.projectIds.push(escrowProjectId);
+    r = await api(`/api/market/investments/${escrowProjectId}/invest`, { method: "POST", user: seller, body: { amount: 100 } });
+    check("contribution placée en séquestre", r.status === 200 && (await escrowBalance(escrowProjectId)) === 100, `statut ${r.status}`);
+    const sellerWalletBefore = await walletBalance(seller.id);
+
+    const refusedDelete = await admin.auth.admin.deleteUser(seller.id);
+    const sellerStillThere = await admin.auth.admin.getUserById(seller.id);
+    check(
+      "suppression d'un compte engagé refusée par la base (même avec la clé service_role)",
+      Boolean(refusedDelete.error) && Boolean(sellerStillThere.data?.user) && (await walletBalance(seller.id)) === sellerWalletBefore,
+      refusedDelete.error?.message ?? "supprimé !",
+    );
+
+    r = await api("/api/account/delete", { method: "POST", user: seller });
+    check(
+      "compte engagé : anonymisé, avec ses motifs",
+      r.status === 200 && r.json?.action === "anonymized" && r.json?.reasons?.includes("escrow_contribution") && r.json?.reasons?.includes("wallet_balance"),
+      `statut ${r.status} ${JSON.stringify(r.json)}`,
+    );
+    const { data: anonymizedAuth } = await admin.auth.admin.getUserById(seller.id);
+    check(
+      "identifiant conservé, e-mail et téléphone effacés, compte bloqué",
+      anonymizedAuth?.user?.id === seller.id &&
+        anonymizedAuth.user.email === `anonyme-${seller.id}@anonymise.invalid` &&
+        !anonymizedAuth.user.phone &&
+        Boolean(anonymizedAuth.user.banned_until),
+      JSON.stringify({ email: anonymizedAuth?.user?.email, banned_until: anonymizedAuth?.user?.banned_until }),
+    );
+    const { data: anonymizedMember } = await admin.from("members").select("name, email, phone").eq("id", sellerMember.id).maybeSingle();
+    check(
+      "nom effacé dans l'annuaire des membres",
+      anonymizedMember?.name === "Compte anonymisé" && !anonymizedMember?.email && !anonymizedMember?.phone,
+      JSON.stringify(anonymizedMember),
+    );
+    r = await api("/api/pay/bundle", { user: seller });
+    check("l'ancienne session ne donne plus accès à l'API (401)", r.status === 401, `statut ${r.status}`);
+    const relogin = await seller.client.auth.signInWithPassword({ email: seller.email, password: PASSWORD });
+    check("reconnexion impossible avec les anciens identifiants", Boolean(relogin.error), "connecté !");
+    const { count: sellerTxCount } = await admin.from("pay_transactions").select("id", { count: "exact", head: true }).eq("user_id", seller.id);
+    check(
+      "solde et écritures comptables conservés",
+      (await walletBalance(seller.id)) === sellerWalletBefore && (sellerTxCount ?? 0) > 0,
+      `solde ${await walletBalance(seller.id)}, ${sellerTxCount} transaction(s)`,
+    );
+    const { data: anonymizationLogs } = await admin.from("admin_audit_logs").select("id").eq("action", `account_anonymized:${seller.id}`);
+    check("anonymisation journalisée dans admin_audit_logs", (anonymizationLogs ?? []).length === 1, `${(anonymizationLogs ?? []).length} entrée(s)`);
+
+    await expire(escrowProjectId);
+    r = await settle();
+    check(
+      "dénouement sans erreur (200, jamais 500) : l'investisseur anonymisé est remboursé",
+      r.status === 200 && r.json?.refunded === 1 && (r.json?.failed ?? []).length === 0 &&
+        (await walletBalance(seller.id)) === sellerWalletBefore + 100 && (await escrowBalance(escrowProjectId)) === 0,
+      `statut ${r.status} ${JSON.stringify(r.json)}, solde ${await walletBalance(seller.id)}`,
+    );
   } finally {
-    console.log("\n12. Suppression des données de test");
+    console.log("\n13. Suppression des données de test");
+    for (const id of created.users) {
+      const action = `account_anonymized:${id}`;
+      await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);
+      await admin.from("admin_audit_logs").delete().eq("action", action);
+    }
     for (const id of created.distributionIds) {
       const action = `review_investment_profit:approved:${id}`;
       const outbox = await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);
@@ -697,8 +791,14 @@ async function main() {
       const { error } = await admin.from("organizations").delete().eq("id", created.orgId);
       console.log(`  organisation : ${error ? `ÉCHEC ${error.message}` : "supprimée"}`);
     }
+    // Un compte au solde non nul n'est plus supprimable (0024) : les
+    // portefeuilles de test partent d'abord.
+    if (created.users.length > 0) {
+      const { error } = await admin.from("pay_wallets").delete().in("user_id", created.users);
+      console.log(`  portefeuilles de test : ${error ? `ÉCHEC ${error.message}` : "supprimés"}`);
+    }
     for (const id of created.users) {
-      // Cascade : portefeuilles, transactions, commandes, compte revendeur et produits.
+      // Cascade : transactions, commandes, compte revendeur et produits.
       const { error } = await admin.auth.admin.deleteUser(id);
       console.log(`  utilisateur ${id.slice(0, 8)} : ${error ? `ÉCHEC ${error.message}` : "supprimé"}`);
     }

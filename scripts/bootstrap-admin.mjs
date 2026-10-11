@@ -21,7 +21,13 @@ function loadEnv() {
   return env;
 }
 
-const env = loadEnv();
+// Les variables d'environnement priment (node --env-file=.env.production.local
+// pour la production) ; à défaut, la base de test de .env.local.
+const env =
+  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? process.env
+    : loadEnv();
+console.log(`Projet Supabase visé : ${new URL(env.NEXT_PUBLIC_SUPABASE_URL).hostname}`);
 const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });

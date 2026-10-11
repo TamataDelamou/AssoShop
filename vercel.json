@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/investments/settle",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/control-plane/push",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
