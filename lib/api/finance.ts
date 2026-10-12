@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { rpcRow, throwRpcError } from "@/lib/api/pay-rpc";
 import {
   FinancialGroup,
   GroupLoan,
@@ -324,6 +325,8 @@ export async function listGroups(
   return (data as unknown as GroupRow[]).map(serializeGroup);
 }
 
+// Fonction SQL atomique group_create (migration 0028) : groupe, créateur,
+// membres, ordre de passage et réglages, ou rien. Réservée au bureau.
 export async function createGroup(
   supabase: SupabaseClient,
   organizationId: string,
@@ -340,99 +343,28 @@ export async function createGroup(
     turn_member_names?: string[];
   },
 ): Promise<FinancialGroup> {
-  const nowIso = new Date().toISOString();
-  const startDate = payload.start_date
-    ? new Date(`${payload.start_date}T00:00:00.000Z`).toISOString()
-    : null;
-  const intervalDays = payload.periodicity === "weekly" ? 7 : 30;
-
-  const { data: group, error } = await supabase
-    .from("financial_groups")
-    .insert({
-      organization_id: organizationId,
-      name: payload.name,
-      type: payload.type,
-      status: "forming",
-      amount: payload.amount,
-      periodicity: payload.periodicity,
-      max_members: payload.max_members,
-      goal_amount: payload.goal_amount ?? null,
-      interest_rate: payload.interest_rate ?? null,
-      start_date: startDate,
-      raised_amount: 0,
-    })
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-
-  // FIN-3 : membres + ordre de passage.
-  const names =
-    payload.type === "tontine"
-      ? (payload.turn_member_names ?? []).slice(
-          0,
-          Math.max(0, payload.max_members - 1),
-        )
-      : [];
-
-  const memberRows = [
-    {
-      group_id: group.id,
-      user_id: payload.creator_user_id ?? null,
-      name: "Bureau de l'association",
-      role: "creator",
-      engagement: "reliable",
-      joined_at: nowIso,
-      last_payment_at: null,
-    },
-    ...names.map((name) => ({
-      group_id: group.id,
-      user_id: null,
-      name,
-      role: "member",
-      engagement: "reliable",
-      joined_at: nowIso,
-      last_payment_at: null,
-    })),
-  ];
-
-  const { data: members, error: memberError } = await supabase
-    .from("group_members")
-    .insert(memberRows)
-    .select();
-  if (memberError) throw new Error(memberError.message);
-
-  if (names.length > 0) {
-    const base = startDate ? new Date(startDate).getTime() : Date.now();
-    const turnRows = names.map((name, index) => ({
-      group_id: group.id,
-      member_id: members[index + 1].id,
-      member_name: name,
-      position: index + 1,
-      expected_date: new Date(
-        base + index * intervalDays * 86_400_000,
-      ).toISOString(),
-      received: false,
-      received_at: null,
-    }));
-    const { error: turnError } = await supabase
-      .from("group_turns")
-      .insert(turnRows);
-    if (turnError) throw new Error(turnError.message);
-  }
-
-  const { error: settingsError } = await supabase.from("group_settings").insert({
-    group_id: group.id,
-    visibility: "private",
-    allow_join_requests: false,
-    notify_payment_reminders: true,
+  const { data, error } = await supabase.rpc("group_create", {
+    p_organization_id: organizationId,
+    p_name: payload.name,
+    p_type: payload.type,
+    p_amount: payload.amount,
+    p_periodicity: payload.periodicity,
+    p_max_members: payload.max_members,
+    p_goal_amount: payload.goal_amount ?? null,
+    p_interest_rate: payload.interest_rate ?? null,
+    p_start_date: payload.start_date ?? null,
+    p_turn_member_names: payload.turn_member_names ?? [],
   });
-  if (settingsError) throw new Error(settingsError.message);
+  if (error) throwRpcError(error);
 
-  const created = await fetchGroup(supabase, group.id);
+  const group = rpcRow<{ id: string }>(data);
+  const created = group ? await fetchGroup(supabase, group.id) : null;
   if (!created) throw new Error("Groupe introuvable après création");
   return created;
 }
 
+// Fonction SQL group_declare_payment (0028). RG-F05 : le versement reste
+// « pending » jusqu'à validation par la trésorerie, quelle que soit la méthode.
 export async function declarePayment(
   supabase: SupabaseClient,
   groupId: string,
@@ -443,69 +375,28 @@ export async function declarePayment(
     method: string;
   },
 ): Promise<FinancialGroup | null> {
-  const group = await fetchGroup(supabase, groupId);
-  if (!group) return null;
-
-  const member = group.members.find((m) => m.id === payload.member_id);
-  const beneficiary = payload.paid_for_member_id
-    ? group.members.find((m) => m.id === payload.paid_for_member_id)
-    : undefined;
-  const confirmed = payload.method === "mobile";
-
-  const { error } = await supabase.from("group_payments").insert({
-    group_id: groupId,
-    member_id: payload.member_id,
-    member_name: member?.name ?? "Membre",
-    method: payload.method,
-    amount: payload.amount,
-    paid_for_member_name: beneficiary?.name ?? null,
-    status: confirmed ? "confirmed" : "pending",
-    paid_at: confirmed ? new Date().toISOString() : null,
+  const { error } = await supabase.rpc("group_declare_payment", {
+    p_group_id: groupId,
+    p_member_id: payload.member_id,
+    p_amount: payload.amount,
+    p_method: payload.method,
+    p_paid_for_member_id: payload.paid_for_member_id ?? null,
   });
-  if (error) throw new Error(error.message);
-
-  if (confirmed) {
-    const { error: updateError } = await supabase
-      .from("financial_groups")
-      .update({ raised_amount: group.raised_amount + payload.amount })
-      .eq("id", groupId);
-    if (updateError) throw new Error(updateError.message);
-  }
-
+  if (error) throwRpcError(error);
   return fetchGroup(supabase, groupId);
 }
 
+// Fonction SQL atomique group_validate_payment (0028) : versement confirmé et
+// total du groupe mis à jour ensemble, par la trésorerie ou le créateur.
 export async function validatePayment(
   supabase: SupabaseClient,
   groupId: string,
   paymentId: string,
 ): Promise<FinancialGroup | null> {
-  const { data: payment, error } = await supabase
-    .from("group_payments")
-    .select("*")
-    .eq("id", paymentId)
-    .eq("group_id", groupId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!payment) return null;
-
-  if (payment.status === "pending") {
-    const { error: updateError } = await supabase
-      .from("group_payments")
-      .update({ status: "confirmed", paid_at: new Date().toISOString() })
-      .eq("id", paymentId);
-    if (updateError) throw new Error(updateError.message);
-
-    const group = await fetchGroup(supabase, groupId);
-    const { error: groupError } = await supabase
-      .from("financial_groups")
-      .update({
-        raised_amount: (group?.raised_amount ?? 0) + Number(payment.amount),
-      })
-      .eq("id", groupId);
-    if (groupError) throw new Error(groupError.message);
-  }
-
+  const { error } = await supabase.rpc("group_validate_payment", {
+    p_payment_id: paymentId,
+  });
+  if (error) throwRpcError(error);
   return fetchGroup(supabase, groupId);
 }
 
@@ -746,44 +637,23 @@ export async function respondSponsorship(
   return data ? serializeSponsorship(data as unknown as SponsorshipRow) : null;
 }
 
+// Fonction SQL sponsorship_confirm (0028). RG-F02 : seul le nouveau membre
+// lui-même peut confirmer son adhésion.
 export async function confirmSponsorship(
   supabase: SupabaseClient,
   requestId: string,
 ): Promise<SponsorshipRequest | null> {
-  const { data: request, error } = await supabase
+  const { error } = await supabase.rpc("sponsorship_confirm", {
+    p_request_id: requestId,
+  });
+  if (error) throwRpcError(error);
+
+  const { data, error: readError } = await supabase
     .from("sponsorship_requests")
-    .select("id, group_id, invitee_name, status")
-    .eq("id", requestId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!request) return null;
-
-  const { data: memberExists } = await supabase
-    .from("group_members")
-    .select("id")
-    .eq("group_id", request.group_id)
-    .eq("name", request.invitee_name)
-    .maybeSingle();
-
-  if (!memberExists) {
-    const { error: insertError } = await supabase.from("group_members").insert({
-      group_id: request.group_id,
-      name: request.invitee_name,
-      role: "member",
-      engagement: "reliable",
-      joined_at: new Date().toISOString(),
-      last_payment_at: null,
-    });
-    if (insertError) throw new Error(insertError.message);
-  }
-
-  const { data, error: updateError } = await supabase
-    .from("sponsorship_requests")
-    .update({ status: "confirmed" })
-    .eq("id", requestId)
     .select(SPONSORSHIP_COLUMNS)
+    .eq("id", requestId)
     .maybeSingle();
-  if (updateError) throw new Error(updateError.message);
+  if (readError) throw new Error(readError.message);
   return data ? serializeSponsorship(data as unknown as SponsorshipRow) : null;
 }
 
@@ -895,108 +765,31 @@ export async function confirmLoanSponsor(
   return fetchLoan(supabase, loanId);
 }
 
+// Fonction SQL atomique loan_decide (0028). RG-F06 : décision du bureau après
+// confirmation du parrain ; le prêt approuvé et ses échéances sont créés ensemble.
 export async function decideLoan(
   supabase: SupabaseClient,
   loanId: string,
   approved: boolean,
 ): Promise<GroupLoan | null> {
-  const { data: loan, error } = await supabase
-    .from("loans")
-    .select("*")
-    .eq("id", loanId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!loan) return null;
-
-  if (loan.status !== "sponsor_confirmed") {
-    return fetchLoan(supabase, loanId);
-  }
-
-  if (!approved) {
-    const { error: updateError } = await supabase
-      .from("loans")
-      .update({ status: "rejected", decision_at: new Date().toISOString() })
-      .eq("id", loanId);
-    if (updateError) throw new Error(updateError.message);
-    return fetchLoan(supabase, loanId);
-  }
-
-  const total = Math.round(
-    Number(loan.amount) * (1 + Number(loan.interest_rate) / 100),
-  );
-  const count = 3;
-  const per = Math.floor(total / count);
-  const remainder = total - per * count;
-
-  const { error: updateError } = await supabase
-    .from("loans")
-    .update({
-      status: "approved",
-      total_due: total,
-      decision_at: new Date().toISOString(),
-    })
-    .eq("id", loanId);
-  if (updateError) throw new Error(updateError.message);
-
-  const now = Date.now();
-  const installments = Array.from({ length: count }, (_, i) => ({
-    loan_id: loanId,
-    position: i + 1,
-    due_date: new Date(
-      now + (i + 1) * 30 * 24 * 60 * 60 * 1000,
-    ).toISOString(),
-    amount: per + (i === count - 1 ? remainder : 0),
-    status: "pending",
-    paid_at: null,
-  }));
-  const { error: installmentsError } = await supabase
-    .from("loan_installments")
-    .insert(installments);
-  if (installmentsError) throw new Error(installmentsError.message);
-
+  const { error } = await supabase.rpc("loan_decide", {
+    p_loan_id: loanId,
+    p_approve: approved,
+  });
+  if (error) throwRpcError(error);
   return fetchLoan(supabase, loanId);
 }
 
+// Fonction SQL atomique loan_repay_installment (0028), réservée à la trésorerie.
 export async function repayInstallment(
   supabase: SupabaseClient,
   loanId: string,
   installmentId: string,
 ): Promise<GroupLoan | null> {
-  const { data: installment, error } = await supabase
-    .from("loan_installments")
-    .select("*")
-    .eq("id", installmentId)
-    .eq("loan_id", loanId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!installment) return null;
-
-  if (installment.status === "pending") {
-    const { error: updateError } = await supabase
-      .from("loan_installments")
-      .update({ status: "paid", paid_at: new Date().toISOString() })
-      .eq("id", installmentId);
-    if (updateError) throw new Error(updateError.message);
-
-    const { data: loan } = await supabase
-      .from("loans")
-      .select("*")
-      .eq("id", loanId)
-      .maybeSingle();
-    if (loan) {
-      const repaid = Number(loan.repaid_amount) + Number(installment.amount);
-      const { error: loanError } = await supabase
-        .from("loans")
-        .update({
-          repaid_amount: repaid,
-          status:
-            repaid >= Number(loan.total_due) ? "repaid" : loan.status,
-        })
-        .eq("id", loanId);
-      if (loanError) throw new Error(loanError.message);
-    }
-  }
-
+  const { error } = await supabase.rpc("loan_repay_installment", {
+    p_installment_id: installmentId,
+  });
+  if (error) throwRpcError(error);
   return fetchLoan(supabase, loanId);
 }
 
@@ -1124,86 +917,42 @@ export async function declareClaim(
   };
 }
 
+// Fonction SQL atomique claim_decide (0028) : décision du bureau et
+// prélèvement sur le fonds de garantie dans la même transaction.
 export async function decideClaim(
   supabase: SupabaseClient,
   organizationId: string,
   claimId: string,
   approved: boolean,
 ): Promise<InsuranceClaim | null> {
-  const { data: claim, error } = await supabase
-    .from("insurance_claims")
-    .select("*")
-    .eq("id", claimId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!claim) return null;
+  const { data, error } = await supabase.rpc("claim_decide", {
+    p_claim_id: claimId,
+    p_approve: approved,
+  });
+  if (error) throwRpcError(error);
 
-  if (claim.status !== "submitted" && claim.status !== "under_review") {
-    return {
-      id: claim.id,
-      member_id: claim.member_id,
-      member_name: claim.member_name,
-      description: claim.description ?? "",
-      amount: Number(claim.amount),
-      indemnity: Number(claim.indemnity),
-      status: claim.status,
-      submitted_at: claim.submitted_at ?? null,
-      decided_at: claim.decided_at ?? null,
-    };
-  }
-
-  const { data: updated, error: updateError } = await supabase
-    .from("insurance_claims")
-    .update({
-      status: approved ? "approved" : "rejected",
-      indemnity: approved ? claim.amount : 0,
-      decided_at: new Date().toISOString(),
-    })
-    .eq("id", claimId)
-    .select()
-    .single();
-  if (updateError) throw new Error(updateError.message);
-
-  if (approved) {
-    const { data: fund } = await supabase
-      .from("guarantee_fund")
-      .select("*")
-      .eq("organization_id", organizationId)
-      .maybeSingle();
-    const current = fund ?? {
-      organization_id: organizationId,
-      balance: 0,
-      levy_rate: 0.004,
-      cap_amount: 1000,
-      total_collected: 0,
-      total_used: 0,
-    };
-    const { error: fundError } = await supabase
-      .from("guarantee_fund")
-      .upsert(
-        {
-          organization_id: organizationId,
-          balance: Number(current.balance) - Number(claim.amount),
-          levy_rate: Number(current.levy_rate),
-          cap_amount: Number(current.cap_amount),
-          total_collected: Number(current.total_collected),
-          total_used: Number(current.total_used) + Number(claim.amount),
-        },
-        { onConflict: "organization_id" },
-      );
-    if (fundError) throw new Error(fundError.message);
-  }
-
+  const claim = rpcRow<{
+    id: string;
+    organization_id: string;
+    member_id: string;
+    member_name: string;
+    description: string | null;
+    amount: number;
+    indemnity: number;
+    status: InsuranceClaim["status"];
+    submitted_at: InsuranceClaim["submitted_at"];
+    decided_at: InsuranceClaim["decided_at"];
+  }>(data);
+  if (!claim || claim.organization_id !== organizationId) return null;
   return {
-    id: updated.id,
-    member_id: updated.member_id,
-    member_name: updated.member_name,
-    description: updated.description ?? "",
-    amount: Number(updated.amount),
-    indemnity: Number(updated.indemnity),
-    status: updated.status,
-    submitted_at: updated.submitted_at ?? null,
-    decided_at: updated.decided_at ?? null,
+    id: claim.id,
+    member_id: claim.member_id,
+    member_name: claim.member_name,
+    description: claim.description ?? "",
+    amount: Number(claim.amount),
+    indemnity: Number(claim.indemnity),
+    status: claim.status,
+    submitted_at: claim.submitted_at ?? null,
+    decided_at: claim.decided_at ?? null,
   };
 }

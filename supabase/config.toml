@@ -439,3 +439,9 @@ import_map = "./functions/deno.json"
 [functions.ai-assistant]
 verify_jwt = true
 import_map = "./functions/deno.json"
+
+# Retrait : jeton de l’utilisateur exigé ; seul chemin vers la fonction SQL
+# pay_withdraw (migration 0027).
+[functions.pay-withdraw]
+verify_jwt = true
+import_map = "./functions/deno.json"

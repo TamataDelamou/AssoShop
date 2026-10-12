@@ -71,8 +71,6 @@ export async function POST(request: NextRequest) {
         currency: payload.currency ?? "GNF",
         country: payload.country ?? "",
         city: payload.city ?? "",
-        rating: 0,
-        reviews_count: 0,
       })
       .select()
       .single();

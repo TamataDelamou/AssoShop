@@ -1,4 +1,4 @@
-// Parcours réel (API + écrans) des protections des migrations 0017 à 0026 :
+// Parcours réel (API + écrans) des protections des migrations 0017 à 0028 :
 // connexion, recharge en attente puis confirmée par le webhook, commande
 // marché payée et partagée, journal d'audit, puis stock, portefeuille
 // plateforme, transfert vers un destinataire réel, commandes groupées,
@@ -542,6 +542,175 @@ async function main() {
     created.extraOrgIds = orgRpc.data?.id ? [orgRpc.data.id] : [];
     check("organisation créée en une opération par la fonction", orgRpc.data?.status === "pending" && orgRpc.data?.created_by === candidate.id, JSON.stringify(orgRpc.data ?? orgRpc.error));
 
+    console.log("\n9 ter. Écritures réservées aux personnes autorisées et opérations atomiques (0027, 0028)");
+    // buyer : administrateur de l'organisation. seller : membre actif, sans
+    // rôle au bureau. stranger et candidate : étrangers à l'organisation.
+    // « .client » : clé anon + jeton de l'utilisateur, comme l'application Flutter.
+    const code = (res) => res.error?.code ?? (res.error ? "erreur" : "aucune erreur");
+
+    // 9 ter.a Votes.
+    const { data: electionRow, error: electionError } = await admin
+      .from("elections")
+      .insert({ organization_id: created.orgId, title: `Scrutin E2E ${RUN}`, position: "president", status: "open" })
+      .select()
+      .single();
+    if (electionError) throw new Error(electionError.message);
+    const candidacy = await seller.client.rpc("election_declare_candidacy", { p_election_id: electionRow.id });
+    check("vote : un membre déclare sa candidature (appel Flutter)", candidacy.data?.member_id === sellerMember.id, JSON.stringify(candidacy.data ?? candidacy.error));
+    const forgedVotes = await seller.client.from("election_candidates").update({ votes: 999 }).eq("id", candidacy.data?.id).select();
+    check("vote : nombre de voix non modifiable directement", Boolean(forgedVotes.error), "accepté !");
+    const strangerVote = await stranger.client.rpc("election_cast_vote", { p_election_id: electionRow.id, p_candidate_id: candidacy.data?.id });
+    check("vote : refusé à un étranger à l'organisation", code(strangerVote) === "PY006", code(strangerVote));
+    const sellerVote = await seller.client.rpc("election_cast_vote", { p_election_id: electionRow.id, p_candidate_id: candidacy.data?.id });
+    check("vote : enregistré pour un membre", sellerVote.data?.voter_id === seller.id, JSON.stringify(sellerVote.data ?? sellerVote.error));
+    const secondVote = await seller.client.rpc("election_cast_vote", { p_election_id: electionRow.id, p_candidate_id: candidacy.data?.id });
+    check("vote : un seul par membre", code(secondVote) === "PY019", code(secondVote));
+    r = await api(`/api/organizations/${created.orgId}/elections/${electionRow.id}/votes`, { method: "POST", user: buyer, body: { candidate_id: candidacy.data?.id } });
+    check("vote : par la route de référence, voix comptées en base", r.status === 201 && r.json?.candidates?.[0]?.votes === 2, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+    r = await api(`/api/organizations/${created.orgId}/elections/${electionRow.id}/votes`, { method: "POST", user: buyer, body: { candidate_id: candidacy.data?.id } });
+    check("vote : second vote refusé par la route (409)", r.status === 409, `statut ${r.status}`);
+    const ballots = await seller.client.from("election_votes").select("voter_id").eq("election_id", electionRow.id);
+    check("vote : chacun ne lit que son bulletin", ballots.data?.length === 1 && ballots.data[0].voter_id === seller.id, JSON.stringify(ballots.data ?? ballots.error));
+    const sellerClose = await seller.client.rpc("election_close", { p_election_id: electionRow.id });
+    check("vote : clôture refusée à un simple membre", code(sellerClose) === "PY006", code(sellerClose));
+    r = await api(`/api/organizations/${created.orgId}/elections/${electionRow.id}`, { method: "PATCH", user: buyer, body: { action: "close" } });
+    check("vote : clôture par le bureau", r.status === 200 && r.json?.status === "closed", `statut ${r.status}`);
+    const reopen = await admin.from("elections").update({ status: "open" }).eq("id", electionRow.id).select();
+    const tamper = await admin.from("election_candidates").update({ votes: 50 }).eq("id", candidacy.data?.id).select();
+    check("vote : scrutin clôturé figé, même avec la clé service_role (RG-C06)", code(reopen) === "PY019" && code(tamper) === "PY019", `${code(reopen)}, ${code(tamper)}`);
+
+    // 9 ter.b Signatures.
+    const forgedRequest = await buyer.client.from("signature_requests").insert({ organization_id: created.orgId, title: "Directe" }).select();
+    check("signature : demande directe (hors fonction) refusée", Boolean(forgedRequest.error), "acceptée !");
+    const sellerRequest = await seller.client.rpc("signature_create", { p_organization_id: created.orgId, p_type: "expense", p_title: "Achat", p_signatory_member_ids: [sellerMember.id] });
+    check("signature : demande refusée à un simple membre", code(sellerRequest) === "PY006", code(sellerRequest));
+    const signatureRpc = await buyer.client.rpc("signature_create", {
+      p_organization_id: created.orgId, p_type: "expense", p_title: `Dépense E2E ${RUN}`, p_signatory_member_ids: [sellerMember.id], p_amount: 6000000,
+    });
+    check("signature : demande créée par le bureau", signatureRpc.data?.status === "pending" && signatureRpc.data?.requested_by_user_id === buyer.id, JSON.stringify(signatureRpc.data ?? signatureRpc.error));
+    const forgedSign = await buyer.client.from("signature_signatories").update({ signed_at: new Date().toISOString() }).eq("request_id", signatureRpc.data?.id).select();
+    check("signature : ligne d'un autre non signable directement", Boolean(forgedSign.error), "acceptée !");
+    r = await api(`/api/organizations/${created.orgId}/signatures/${signatureRpc.data?.id}/sign`, { method: "PATCH", user: buyer, body: {} });
+    check("signature : refusée à qui n'est pas signataire (403)", r.status === 403, `statut ${r.status}`);
+    // Le signataire est un membre actif sans rattachement memberships : il signe par la fonction (appel Flutter).
+    const ownSign = await seller.client.rpc("signature_sign", { p_request_id: signatureRpc.data?.id });
+    check("signature : le signataire signe sa ligne, la demande se clôt", ownSign.data?.status === "signed", JSON.stringify(ownSign.data ?? ownSign.error));
+    const againSign = await seller.client.rpc("signature_sign", { p_request_id: signatureRpc.data?.id });
+    check("signature : demande close non signable à nouveau", (againSign.error?.code ?? "") === "PY019", againSign.error?.code ?? "acceptée !");
+
+    // 9 ter.c Cas sociaux.
+    const caseRpc = await seller.client.rpc("social_case_create", { p_organization_id: created.orgId, p_title: `Cas E2E ${RUN}`, p_target_amount: 5000 });
+    check("cas social : déclaré par un membre, soumis", caseRpc.data?.status === "submitted" && caseRpc.data?.collected_amount === 0, JSON.stringify(caseRpc.data ?? caseRpc.error));
+    const forgedCase = await buyer.client.from("social_cases").update({ status: "funded", collected_amount: 5000 }).eq("id", caseRpc.data?.id).select();
+    check("cas social : statut et montant non modifiables directement", Boolean(forgedCase.error), "accepté !");
+    const sellerReview = await seller.client.rpc("social_case_review", { p_case_id: caseRpc.data?.id, p_approve: true });
+    check("cas social : validation refusée à un simple membre", code(sellerReview) === "PY006", code(sellerReview));
+    const early = await seller.client.rpc("social_case_contribute", { p_case_id: caseRpc.data?.id, p_amount: 5000 });
+    check("cas social : contribution refusée avant validation (RG-C05)", code(early) === "PY019", code(early));
+    r = await api(`/api/organizations/${created.orgId}/social-cases/${caseRpc.data?.id}`, { method: "PATCH", user: buyer, body: { action: "approve", committee_note: "Accord" } });
+    check("cas social : validé par le bureau (route de référence)", r.status === 200 && r.json?.status === "approved", `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+    r = await api(`/api/organizations/${created.orgId}/social-cases/${caseRpc.data?.id}`, { method: "PATCH", user: buyer, body: { action: "disburse" } });
+    check("cas social : décaissement refusé avant l'objectif (409)", r.status === 409, `statut ${r.status}`);
+    const strangerGift = await stranger.client.rpc("social_case_contribute", { p_case_id: caseRpc.data?.id, p_amount: 5000 });
+    check("cas social : contribution refusée à un étranger", code(strangerGift) === "PY006", code(strangerGift));
+    const gift = await seller.client.rpc("social_case_contribute", { p_case_id: caseRpc.data?.id, p_amount: 5000 });
+    check("cas social : contribution comptée en base, cas financé", gift.data?.collected_amount === 5000 && gift.data?.status === "funded", JSON.stringify(gift.data ?? gift.error));
+    r = await api(`/api/organizations/${created.orgId}/social-cases/${caseRpc.data?.id}`, { method: "PATCH", user: buyer, body: { action: "disburse" } });
+    check("cas social : décaissé par le bureau une fois financé", r.status === 200 && r.json?.status === "disbursed", `statut ${r.status}`);
+
+    // 9 ter.d Avis (RG-M04).
+    const serviceInsert = await seller.client.from("market_services").insert({ provider_user_id: seller.id, title: `Service E2E ${RUN}`, price: 1000 }).select().single();
+    created.serviceId = serviceInsert.data?.id ?? null;
+    check("avis : service publié par son prestataire", Boolean(created.serviceId), JSON.stringify(serviceInsert.error));
+    const selfRating = await seller.client.from("market_services").update({ rating: 5, reviews_count: 100 }).eq("id", created.serviceId).select();
+    check("avis : le prestataire ne modifie pas sa note", Boolean(selfRating.error), "accepté !");
+    r = await api(`/api/market/services/${created.serviceId}/reviews`, { method: "POST", user: buyer, body: { rating: 5, comment: "Jamais sollicité", solicited: true } });
+    check("avis : refusé sans sollicitation, même en cochant la case (403)", r.status === 403, `statut ${r.status}`);
+    const serviceRequest = await buyer.client.rpc("market_request_service", { p_service_id: created.serviceId, p_message: "Besoin d'un devis" });
+    check("avis : sollicitation enregistrée", serviceRequest.data?.status === "requested", JSON.stringify(serviceRequest.data ?? serviceRequest.error));
+    const selfConfirm = await buyer.client.rpc("market_respond_service_request", { p_request_id: serviceRequest.data?.id, p_confirm: true });
+    check("avis : le demandeur ne confirme pas lui-même", code(selfConfirm) === "PY006", code(selfConfirm));
+    const providerConfirm = await seller.client.rpc("market_respond_service_request", { p_request_id: serviceRequest.data?.id, p_confirm: true });
+    check("avis : sollicitation confirmée par le prestataire", providerConfirm.data?.status === "confirmed", JSON.stringify(providerConfirm.data ?? providerConfirm.error));
+    r = await api(`/api/market/services/${created.serviceId}/reviews`, { method: "POST", user: buyer, body: { rating: 4, comment: "Sérieux" } });
+    const ratedService = await admin.from("market_services").select("rating, reviews_count").eq("id", created.serviceId).single();
+    check(
+      "avis : publié après sollicitation confirmée, note recalculée en base",
+      r.status === 200 && r.json?.user_id === buyer.id && Number(ratedService.data?.rating) === 4 && ratedService.data?.reviews_count === 1,
+      `statut ${r.status} ${JSON.stringify(ratedService.data)}`,
+    );
+    r = await api(`/api/market/services/${created.serviceId}/reviews`, { method: "POST", user: buyer, body: { rating: 1 } });
+    check("avis : un seul par utilisateur (409)", r.status === 409, `statut ${r.status}`);
+
+    // 9 ter.e Retrait.
+    const withdrawBefore = await walletBalance(buyer.id);
+    const directWithdraw = await buyer.client.rpc("pay_withdraw", { p_user_id: buyer.id, p_amount: 100 });
+    const legacyWithdraw = await buyer.client.rpc("pay_withdraw", { p_amount: 100 });
+    check(
+      "retrait : pay_withdraw non appelable par l'application, solde intact",
+      Boolean(directWithdraw.error) && Boolean(legacyWithdraw.error) && (await walletBalance(buyer.id)) === withdrawBefore,
+      `${code(directWithdraw)}, ${code(legacyWithdraw)}, solde ${await walletBalance(buyer.id)}`,
+    );
+    r = await api("/api/pay/withdraw", { method: "POST", user: buyer, body: { amount: 100, provider: "Orange Money" } });
+    check(
+      "retrait : possible par le serveur (projet de test), débit du montant et de la commission",
+      r.status === 200 && r.json?.type === "withdrawal" && (await walletBalance(buyer.id)) === withdrawBefore - 100 - Number(r.json?.commission ?? 0),
+      `statut ${r.status} ${JSON.stringify(r.json)}, solde ${await walletBalance(buyer.id)} (avant ${withdrawBefore})`,
+    );
+
+    // 9 ter.f Groupe financier, versement, prêt.
+    r = await api(`/api/organizations/${created.orgId}/financial-groups`, { method: "POST", user: seller, body: { name: "Refusé", type: "tontine", amount: 1000, periodicity: "weekly", max_members: 3 } });
+    check("groupe : création refusée à un simple membre (403)", r.status === 403, `statut ${r.status}`);
+    r = await api(`/api/organizations/${created.orgId}/financial-groups`, {
+      method: "POST", user: buyer,
+      body: { name: `Tontine E2E ${RUN}`, type: "tontine", amount: 1000, periodicity: "weekly", max_members: 3, turn_member_names: ["Fatou", "Moussa"] },
+    });
+    const groupId = r.json?.id;
+    const creatorRow = (r.json?.members ?? []).find((m) => m.role === "creator");
+    check("groupe : créé d'un bloc avec membres et tours", r.status === 201 && r.json?.members?.length === 3 && r.json?.turns?.length === 2, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 300)}`);
+    r = await api(`/api/organizations/${created.orgId}/financial-groups/${groupId}/payments`, { method: "POST", user: buyer, body: { member_id: creatorRow?.id, amount: 1000, method: "mobile" } });
+    const pendingPayment = (r.json?.payments ?? []).find((p) => p.status === "pending");
+    check("versement : déclaré en attente, total du groupe inchangé (RG-F05)", r.status === 200 && Boolean(pendingPayment) && r.json?.raised_amount === 0, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 300)}`);
+    const forgedPayment = await buyer.client.from("group_payments").update({ status: "confirmed" }).eq("id", pendingPayment?.id).select();
+    check("versement : non validable directement", Boolean(forgedPayment.error), "accepté !");
+    const sellerValidate = await seller.client.rpc("group_validate_payment", { p_payment_id: pendingPayment?.id });
+    check("versement : validation refusée à un simple membre", code(sellerValidate) === "PY006", code(sellerValidate));
+    r = await api(`/api/organizations/${created.orgId}/financial-groups/${groupId}/payments/${pendingPayment?.id}/validate`, { method: "POST", user: buyer });
+    check("versement : validé par la trésorerie, total mis à jour", r.status === 200 && r.json?.raised_amount === 1000, `statut ${r.status} ${JSON.stringify(r.json)?.slice(0, 200)}`);
+    r = await api(`/api/organizations/${created.orgId}/financial-groups/${groupId}/payments/${pendingPayment?.id}/validate`, { method: "POST", user: buyer });
+    check("versement : double validation refusée (409)", r.status === 409, `statut ${r.status}`);
+
+    const fatouRow = (await admin.from("group_members").select("id").eq("group_id", groupId).eq("name", "Fatou").single()).data;
+    const loanRow = (
+      await admin
+        .from("loans")
+        .insert({ group_id: groupId, member_id: fatouRow?.id, member_name: "Fatou", amount: 3000, interest_rate: 10, status: "sponsor_confirmed" })
+        .select()
+        .single()
+    ).data;
+    const sellerDecision = await seller.client.rpc("loan_decide", { p_loan_id: loanRow?.id, p_approve: true });
+    check("prêt : décision refusée à un simple membre", code(sellerDecision) === "PY006", code(sellerDecision));
+    const decision = await buyer.client.rpc("loan_decide", { p_loan_id: loanRow?.id, p_approve: true });
+    const dueRows = (await admin.from("loan_installments").select("id, amount").eq("loan_id", loanRow?.id).order("position")).data ?? [];
+    check(
+      "prêt : approuvé avec ses trois échéances, d'un bloc",
+      decision.data?.status === "approved" && decision.data?.total_due === 3300 && dueRows.length === 3 && dueRows.reduce((sum, d) => sum + d.amount, 0) === 3300,
+      JSON.stringify(decision.data ?? decision.error),
+    );
+    const repayment = await buyer.client.rpc("loan_repay_installment", { p_installment_id: dueRows[0]?.id });
+    check("prêt : échéance remboursée, total mis à jour", repayment.data?.repaid_amount === dueRows[0]?.amount, JSON.stringify(repayment.data ?? repayment.error));
+    const replay = await buyer.client.rpc("loan_repay_installment", { p_installment_id: dueRows[0]?.id });
+    check("prêt : échéance non remboursable deux fois", code(replay) === "PY019", code(replay));
+
+    // 9 ter.g Hub.
+    let favoritesRpc = await seller.client.rpc("hub_toggle_favorite", { p_type: "product", p_label: `Favori E2E ${RUN}` });
+    const added = favoritesRpc.data?.some((f) => f.label === `Favori E2E ${RUN}`);
+    favoritesRpc = await seller.client.rpc("hub_toggle_favorite", { p_type: "product", p_label: `Favori E2E ${RUN}` });
+    check("hub : favori ajouté puis retiré par la même fonction", added === true && !favoritesRpc.data?.some((f) => f.label === `Favori E2E ${RUN}`), JSON.stringify(favoritesRpc.error));
+    r = await api("/api/hub/preferences", { method: "POST", user: seller, body: { preferences: [{ channel: "sms", event_type: "payment", enabled: false }] } });
+    check("hub : préférences remplacées d'un bloc (route de référence)", r.status === 200 && r.json?.length === 1 && r.json[0].enabled === false, `statut ${r.status} ${JSON.stringify(r.json)}`);
+    await seller.client.rpc("hub_set_preferences", { p_preferences: [] });
+
     console.log("\n10. Séquestre des investissements : dénouement tout ou rien");
     const cron = { Authorization: `Bearer ${CRON_SECRET}` };
     const settle = () => api("/api/cron/investments/settle", { method: "POST", headers: cron });
@@ -828,6 +997,11 @@ async function main() {
     );
   } finally {
     console.log("\n13. Suppression des données de test");
+    if (created.serviceId) {
+      // Le service survit à son prestataire (provider_user_id mis à null) : il part explicitement.
+      const { error } = await admin.from("market_services").delete().eq("id", created.serviceId);
+      console.log(`  service de test : ${error ? `ÉCHEC ${error.message}` : "supprimé"}`);
+    }
     for (const id of created.kycIds ?? []) {
       const action = `review_kyc:approved:${id}`;
       await admin.from("control_plane_outbox").delete().eq("payload->record->>action", action);

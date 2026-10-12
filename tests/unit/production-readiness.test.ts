@@ -71,7 +71,7 @@ describe("Garde-fou argent réel (PAY_REAL_MONEY)", () => {
 
     const withdraw = read("app/api/pay/withdraw/route.ts");
     expect(withdraw).toContain("if (isRealMoneyBlocked()) return realMoneyBlockedResponse();");
-    expect(withdraw.indexOf("isRealMoneyBlocked()")).toBeLessThan(withdraw.indexOf('supabase.rpc("pay_withdraw"'));
+    expect(withdraw.indexOf("isRealMoneyBlocked()")).toBeLessThan(withdraw.indexOf('.rpc("pay_withdraw"'));
   });
 
   it("affiche le bandeau tant que l'interrupteur est désactivé", () => {

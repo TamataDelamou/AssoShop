@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { rpcRow, throwRpcError } from "@/lib/api/pay-rpc";
 import {
   Asset,
   Beneficiary,
@@ -244,14 +245,6 @@ async function fetchSocialCase(
   return data ? serializeSocialCase(data as unknown as SocialCaseRow) : null;
 }
 
-function currentPeriodLabel(): string {
-  const label = new Date().toLocaleDateString("fr-FR", {
-    month: "long",
-    year: "numeric",
-  });
-  return label.charAt(0).toUpperCase() + label.slice(1);
-}
-
 interface MemberInfo {
   id: string;
   name: string;
@@ -322,6 +315,8 @@ export async function listContributions(
   return items;
 }
 
+// Fonction SQL contribution_declare (0028) : la cotisation déclarée reste
+// « pending » jusqu'à validation par la trésorerie, quelle que soit la méthode.
 export async function payContribution(
   supabase: SupabaseClient,
   organizationId: string,
@@ -332,56 +327,17 @@ export async function payContribution(
     method: string;
   },
 ): Promise<Contribution> {
-  const now = new Date().toISOString();
-  const paid = payload.method === "online";
-  const values = {
-    organization_id: organizationId,
-    member_id: payload.beneficiary_member_id,
-    amount: payload.amount,
-    period_label: currentPeriodLabel(),
-    due_date: now,
-    status: paid ? "paid" : "pending",
-    method: payload.method,
-    paid_at: paid ? now : null,
-    paid_by: null,
-    validated_by: null,
-  };
+  const { data, error } = await supabase.rpc("contribution_declare", {
+    p_organization_id: organizationId,
+    p_member_id: payload.beneficiary_member_id,
+    p_amount: payload.amount,
+    p_method: payload.method,
+    p_contribution_id: payload.contribution_id ?? null,
+  });
+  if (error) throwRpcError(error);
 
-  let rowId: string | null = null;
-  if (payload.contribution_id) {
-    const { data: existing } = await supabase
-      .from("contributions")
-      .select("id")
-      .eq("id", payload.contribution_id)
-      .eq("organization_id", organizationId)
-      .maybeSingle();
-    if (existing) {
-      rowId = existing.id;
-      const { error } = await supabase
-        .from("contributions")
-        .update(values)
-        .eq("id", rowId);
-      if (error) throw new Error(error.message);
-    }
-  }
-
-  if (!rowId) {
-    const { data: created, error } = await supabase
-      .from("contributions")
-      .insert(values)
-      .select("id")
-      .single();
-    if (error) throw new Error(error.message);
-    rowId = created.id;
-  }
-
-  const { data: row } = await supabase
-    .from("contributions")
-    .select(CONTRIBUTION_COLUMNS)
-    .eq("id", rowId)
-    .maybeSingle();
   const map = await getMembersMap(supabase, organizationId);
-  const item = serializeContribution(row as unknown as ContributionRow);
+  const item = serializeContribution(rpcRow<ContributionRow>(data) as ContributionRow);
   return { ...item, member: map.get(item.member_id) };
 }
 
@@ -474,6 +430,8 @@ async function resolveBeneficiaryUserId(
   return match?.user_id ?? null;
 }
 
+// Fonction SQL social_case_create (0027) : déclaration par un membre, toujours
+// « submitted », montant collecté à zéro.
 export async function createSocialCase(
   supabase: SupabaseClient,
   organizationId: string,
@@ -495,121 +453,68 @@ export async function createSocialCase(
       payload.beneficiary_name,
     ));
 
-  const { data, error } = await supabase
-    .from("social_cases")
-    .insert({
-      organization_id: organizationId,
-      title: payload.title,
-      description: payload.description,
-      type: payload.type,
-      status: "submitted",
-      beneficiary_name: payload.beneficiary_name,
-      beneficiary_user_id: beneficiaryUserId,
-      target_amount: payload.target_amount,
-      collected_amount: 0,
-      currency: "GNF",
-      contributors_visible: payload.contributors_visible,
-      committee_note: null,
-      disbursed_at: null,
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(error.message);
+  const { data, error } = await supabase.rpc("social_case_create", {
+    p_organization_id: organizationId,
+    p_title: payload.title,
+    p_target_amount: payload.target_amount,
+    p_description: payload.description ?? "",
+    p_type: payload.type,
+    p_beneficiary_name: payload.beneficiary_name ?? "",
+    p_beneficiary_user_id: beneficiaryUserId ?? null,
+    p_contributors_visible: payload.contributors_visible,
+  });
+  if (error) throwRpcError(error);
 
-  const created = await fetchSocialCase(supabase, data.id);
+  const row = rpcRow<{ id: string }>(data);
+  const created = row ? await fetchSocialCase(supabase, row.id) : null;
   if (!created) throw new Error("Cas introuvable après création");
   return created;
 }
 
+// Fonction SQL social_case_review (0027). RG-C05 : validation par le comité
+// (bureau), jamais par le bénéficiaire.
 export async function validateSocialCase(
   supabase: SupabaseClient,
   caseId: string,
   decision: string,
   committeeNote: string | null,
 ): Promise<SocialCase | null> {
-  const { data: existing, error } = await supabase
-    .from("social_cases")
-    .select("*")
-    .eq("id", caseId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!existing) return null;
-
-  const { error: updateError } = await supabase
-    .from("social_cases")
-    .update({
-      status: decision === "approve" ? "approved" : "rejected",
-      committee_note: committeeNote,
-    })
-    .eq("id", caseId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("social_case_review", {
+    p_case_id: caseId,
+    p_approve: decision === "approve",
+    p_note: committeeNote,
+  });
+  if (error) throwRpcError(error);
   return fetchSocialCase(supabase, caseId);
 }
 
+// Fonction SQL social_case_disburse (0027). RG-C05 : décaissement par le
+// président ou la trésorerie, une fois l'objectif atteint.
 export async function disburseSocialCase(
   supabase: SupabaseClient,
   caseId: string,
 ): Promise<SocialCase | null> {
-  const { data: existing, error } = await supabase
-    .from("social_cases")
-    .select("*")
-    .eq("id", caseId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!existing) return null;
-
-  if (existing.status === "funded") {
-    const { error: updateError } = await supabase
-      .from("social_cases")
-      .update({
-        status: "disbursed",
-        disbursed_at: new Date().toISOString(),
-      })
-      .eq("id", caseId);
-    if (updateError) throw new Error(updateError.message);
-  }
-
+  const { error } = await supabase.rpc("social_case_disburse", {
+    p_case_id: caseId,
+  });
+  if (error) throwRpcError(error);
   return fetchSocialCase(supabase, caseId);
 }
 
+// Fonction SQL atomique social_case_contribute (0027) : contribution et
+// montant collecté mis à jour ensemble. Le nom du contributeur est celui de
+// l'appelant, établi en base.
 export async function contributeSocialCase(
   supabase: SupabaseClient,
   caseId: string,
   payload: { name: string; amount: number; anonymous: boolean },
 ): Promise<SocialCase | null> {
-  const { data: existing, error } = await supabase
-    .from("social_cases")
-    .select("*")
-    .eq("id", caseId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!existing) return null;
-
-  const { error: contributionError } = await supabase
-    .from("social_case_contributors")
-    .insert({
-      case_id: caseId,
-      name: payload.anonymous ? "Donateur anonyme" : payload.name,
-      amount: payload.amount,
-      anonymous: payload.anonymous,
-      contributed_at: new Date().toISOString(),
-    });
-  if (contributionError) throw new Error(contributionError.message);
-
-  const collected = Number(existing.collected_amount) + payload.amount;
-  const { error: updateError } = await supabase
-    .from("social_cases")
-    .update({
-      collected_amount: collected,
-      status:
-        existing.status === "approved" && collected >= Number(existing.target_amount)
-          ? "funded"
-          : existing.status,
-    })
-    .eq("id", caseId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("social_case_contribute", {
+    p_case_id: caseId,
+    p_amount: payload.amount,
+    p_anonymous: payload.anonymous,
+  });
+  if (error) throwRpcError(error);
   return fetchSocialCase(supabase, caseId);
 }
 

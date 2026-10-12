@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { rpcRow, throwRpcError } from "@/lib/api/pay-rpc";
 
 export async function POST(
   request: NextRequest,
@@ -7,58 +8,26 @@ export async function POST(
 ) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase } = ctx;
   const { serviceId } = await params;
 
   const payload = (await request.json().catch(() => null)) as {
-    author_name?: string;
     rating?: number;
     comment?: string;
-    solicited?: boolean;
   } | null;
 
   try {
-    // RG-M04 : seules les personnes ayant sollicité le service peuvent l'évaluer.
-    if (!payload?.solicited) {
-      return NextResponse.json(
-        { error: "Seuls les bénéficiaires du service peuvent l'évaluer" },
-        { status: 400 },
-      );
-    }
+    // RG-M04 : seule une personne ayant sollicité le service peut l'évaluer.
+    // La vérification n'est plus déclarative : la fonction SQL
+    // market_review_service (migration 0027) exige une sollicitation
+    // confirmée par le prestataire, et recalcule la note du service.
+    const { data, error } = await ctx.supabase.rpc("market_review_service", {
+      p_service_id: serviceId,
+      p_rating: Math.round(payload?.rating ?? 5),
+      p_comment: payload?.comment ?? "",
+    });
+    if (error) throwRpcError(error);
 
-    const { data: service } = await supabase
-      .from("market_services")
-      .select("*")
-      .eq("id", serviceId)
-      .maybeSingle();
-    if (!service) {
-      return NextResponse.json({ error: "Service introuvable" }, { status: 404 });
-    }
-
-    const rating = Math.max(1, Math.min(5, payload.rating ?? 5));
-
-    const { data: review, error } = await supabase
-      .from("market_service_reviews")
-      .insert({
-        service_id: serviceId,
-        author_name: payload.author_name ?? "",
-        rating,
-        comment: payload.comment ?? "",
-        solicited: true,
-      })
-      .select()
-      .single();
-    if (error) throw error;
-
-    const reviewsCount = (service.reviews_count ?? 0) + 1;
-    const newRating =
-      (Number(service.rating ?? 0) * (reviewsCount - 1) + rating) / reviewsCount;
-    await supabase
-      .from("market_services")
-      .update({ reviews_count: reviewsCount, rating: newRating })
-      .eq("id", serviceId);
-
-    return NextResponse.json(review);
+    return NextResponse.json(rpcRow(data));
   } catch (err) {
     return apiError(err);
   }

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { throwRpcError } from "@/lib/api/pay-rpc";
 import {
   Announcement,
   AssociationDocument,
@@ -290,6 +291,8 @@ export async function createProject(
   return created;
 }
 
+// Fonction SQL atomique project_contribute (0028) : contribution et montant
+// collecté mis à jour ensemble. Le nom du contributeur est établi en base.
 export async function contributeToProject(
   supabase: SupabaseClient,
   projectId: string,
@@ -299,38 +302,12 @@ export async function contributeToProject(
     anonymous: boolean;
   },
 ): Promise<CommunityProject | null> {
-  const { data: project, error } = await supabase
-    .from("projects")
-    .select("*")
-    .eq("id", projectId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!project) return null;
-
-  const { error: contributionError } = await supabase
-    .from("project_contributions")
-    .insert({
-      project_id: projectId,
-      contributor_name: payload.anonymous
-        ? "Donateur anonyme"
-        : payload.contributor_name,
-      amount: payload.amount,
-      anonymous: payload.anonymous,
-      contributed_at: new Date().toISOString(),
-    });
-  if (contributionError) throw new Error(contributionError.message);
-
-  const raised = Number(project.raised_amount) + payload.amount;
-  const completed = raised >= Number(project.goal_amount);
-  const { error: updateError } = await supabase
-    .from("projects")
-    .update({
-      raised_amount: raised,
-      status: completed ? "completed" : project.status,
-    })
-    .eq("id", projectId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("project_contribute", {
+    p_project_id: projectId,
+    p_amount: payload.amount,
+    p_anonymous: Boolean(payload.anonymous),
+  });
+  if (error) throwRpcError(error);
   return fetchProject(supabase, projectId);
 }
 
@@ -426,31 +403,19 @@ export async function saveMinutes(
   return fetchMeeting(supabase, meetingId);
 }
 
+// Fonction SQL meeting_check_in (0028) : pointage par le président, le
+// secrétaire ou leurs adjoints.
 export async function checkInAttendee(
   supabase: SupabaseClient,
   meetingId: string,
   attendeeId: string,
   status: string,
 ): Promise<Meeting | null> {
-  const { data: attendee, error } = await supabase
-    .from("meeting_attendees")
-    .select("*")
-    .eq("id", attendeeId)
-    .eq("meeting_id", meetingId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!attendee) return null;
-
-  const present = status === "present";
-  const { error: updateError } = await supabase
-    .from("meeting_attendees")
-    .update({
-      status,
-      checked_in_at: present ? new Date().toISOString() : null,
-    })
-    .eq("id", attendeeId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("meeting_check_in", {
+    p_attendee_id: attendeeId,
+    p_status: status,
+  });
+  if (error) throwRpcError(error);
   return fetchMeeting(supabase, meetingId);
 }
 
