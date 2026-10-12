@@ -75,7 +75,6 @@ const ROLES = {
   pay_service_fee: "Commission de service d'une recharge ou d'un retrait pour un montant donné : à afficher AVANT validation (RG-P03).",
   pay_topup: "Demande de recharge : crée une transaction « pending », sans crédit. Le portefeuille n'est crédité qu'à la confirmation de l'opérateur (Edge Function `pay-topup-confirm`).",
   pay_transfer: "Transfert vers un membre d'une organisation commune, désigné par sa fiche membre (`p_to_member_id`) ou son identifiant utilisateur (`p_to_user_id`). Débit et crédit dans la même transaction, sans commission. Un compte sans organisation commune donne la même erreur qu'un compte inconnu.",
-  pay_withdraw: "Retrait : débite le portefeuille du montant et de la commission. **Ne pas proposer dans Flutter tant que le retrait réel vers Mobile Money n'existe pas** (voir règles absolues).",
   market_create_order: "Crée une commande. `p_items` = `[{ \"product_id\": uuid, \"quantity\": entier }]`. Prix et total sont calculés en base ; un seul revendeur par commande. Le stock n'est décrémenté qu'au paiement.",
   market_cancel_order: "Annulation par l'acheteur, tant que la commande n'est pas payée.",
   market_pay_order: "Paiement par l'acheteur : débit du portefeuille, crédit du revendeur moins la commission, décrément du stock.",
@@ -92,6 +91,41 @@ const ROLES = {
   market_investment_commission_rate: "Taux (en %) de la commission prélevée au versement d'un séquestre : à afficher avant tout investissement (RG-P03).",
   market_declare_investment_profit: "Le porteur d'un projet financé déclare un bénéfice à distribuer. Aucun mouvement de fonds avant validation par un administrateur.",
   market_review_investment_profit: "Back-office : valide (`approved`) ou refuse (`rejected`) un bénéfice déclaré. La validation débite le porteur et crédite chaque investisseur au prorata de sa mise.",
+  org_is_member: "Vrai si l'appelant est membre de l'organisation (compte rattaché ou fiche de membre active).",
+  org_is_bureau: "Vrai si l'appelant est administrateur de l'organisation ou membre du bureau (président, secrétaire, trésorier, adjoints) : sert à afficher les actions du bureau.",
+  org_is_treasurer: "Vrai si l'appelant est administrateur de l'organisation, trésorier ou vice-trésorier : sert à afficher les validations de trésorerie.",
+  org_has_role: "Vrai si l'appelant est administrateur de l'organisation ou porte l'un des rôles donnés (`president`, `secretary`, `treasurer`, …).",
+  org_member_id: "Identifiant de la fiche de membre active de l'appelant dans l'organisation, ou null.",
+  election_declare_candidacy: "Candidature à un scrutin ouvert. Sans `p_member_id` : l'appelant se déclare lui-même. Avec : réservé au bureau.",
+  election_cast_vote: "Vote : un seul par membre et par scrutin, définitif. Le décompte est tenu en base ; le bulletin n'est lisible que par son auteur.",
+  election_close: "Clôture par le président, le secrétaire ou leurs adjoints. Définitive : un scrutin clôturé n'est plus modifiable (RG-C06).",
+  signature_create: "Ouvre une demande de signature (bureau). `p_signatory_member_ids` : fiches de membres actifs disposant d'un compte.",
+  signature_sign: "L'appelant signe SA ligne. La demande passe à `signed` quand toutes les lignes sont signées.",
+  signature_reject: "Refus par l'un des signataires désignés : la demande passe à `rejected`.",
+  social_case_create: "Déclare un cas social (tout membre). Toujours `submitted` ; visible des autres membres seulement après validation (RG-C05).",
+  social_case_review: "Décision du comité (bureau) : `p_approve` vrai → `approved`, faux → `rejected`. Jamais par le bénéficiaire.",
+  social_case_contribute: "Contribution d'un membre à un cas validé. Le montant collecté est calculé en base ; le cas passe à `funded` quand l'objectif est atteint. Registre : aucun mouvement de portefeuille.",
+  social_case_disburse: "Décaissement par le président ou la trésorerie, uniquement quand le cas est `funded`.",
+  market_request_service: "Sollicite un service. Rejouable : renvoie la sollicitation en attente si elle existe.",
+  market_respond_service_request: "Réponse du prestataire à une sollicitation : `p_confirm` vrai → `confirmed`, faux → `declined`.",
+  market_review_service: "Avis sur un service (note de 1 à 5). Réservé à qui a une sollicitation confirmée par le prestataire (RG-M04) ; un avis par utilisateur. La note du service est recalculée en base.",
+  market_review_reseller: "Avis sur un revendeur (note de 1 à 5). Réservé à qui a reçu une commande livrée de ce revendeur ; un avis par utilisateur.",
+  hub_toggle_favorite: "Ajoute le favori s'il est absent, le retire sinon. Renvoie la liste à jour.",
+  hub_send_message: "Ajoute un message à une conversation de l'appelant et met à jour son aperçu.",
+  hub_set_preferences: "Remplace d'un bloc les préférences de notification. `p_preferences` = `[{ \"channel\": \"in_app\", \"event_type\": \"…\", \"enabled\": true }]`.",
+  contribution_declare: "Déclare le paiement d'une cotisation, pour soi ou pour un tiers. Toujours `pending` : la cotisation n'est payée qu'après validation par la trésorerie.",
+  group_create: "Crée un groupe financier (bureau) : groupe, créateur, membres et ordre de passage (tontine), réglages — ou rien.",
+  group_is_creator: "Vrai si l'appelant est le créateur (administrateur) du groupe.",
+  group_declare_payment: "Déclare un versement, pour soi (ou pour un autre membre si l'appelant est trésorier ou créateur du groupe). Toujours `pending` ; le total du groupe ne bouge qu'à la validation (RG-F05).",
+  group_validate_payment: "Validation par la trésorerie ou le créateur du groupe : versement confirmé et total du groupe mis à jour ensemble.",
+  sponsorship_confirm: "Le nouveau membre confirme LUI-MÊME son adhésion après l'accord du parrain (RG-F02). Il est reconnu par son compte ou par le numéro de téléphone vérifié de son compte.",
+  loan_decide: "Décision du bureau sur un prêt confirmé par le parrain (RG-F06). L'approbation crée les trois échéances. Jamais sur son propre prêt.",
+  loan_repay_installment: "Enregistre le remboursement d'une échéance (trésorerie). Le prêt passe à `repaid` quand tout est remboursé.",
+  claim_decide: "Décision du bureau sur une demande d'indemnisation. L'indemnité est prélevée sur le fonds de garantie dans la même transaction ; refusée si le fonds ne la couvre pas.",
+  project_contribute: "Contribution d'un membre à un projet en cours. Le montant collecté est calculé en base. Registre : aucun mouvement de portefeuille.",
+  meeting_check_in: "Pointage d'un participant (`invited`, `present`, `absent`, `excused`) par le président, le secrétaire ou leurs adjoints.",
+  transfer_decide: "Décision du bureau de l'association d'accueil sur un transfert (`pending`, `accepted`, `rejected`). Une fois prise, elle n'est plus modifiable.",
+  accounting_consolidate: "Consolidation par la trésorerie : mouvements marqués consolidés et écritures créées ensemble. Rejouable sans doublon.",
   is_platform_admin: "Vrai si l'appelant est administrateur de la plateforme : sert à afficher le mode administrateur.",
   admin_overview: "Tableau de bord : compteurs, volume du mois, validations en attente.",
   admin_funds_summary: "Rapprochement du compte marchand : total des portefeuilles, des séquestres et du portefeuille plateforme, recharges en attente.",
@@ -112,10 +146,14 @@ const ROLES = {
 
 const RPC_GROUPS = [
   ["Compte : PIN, profil, KYC, fermeture", /^(pin_|profile_|kyc_|account_close_self)/],
-  ["Organisations", /^org_create$/],
+  ["Organisations : création et rôle de l'appelant", /^(org_create|org_is_member|org_is_bureau|org_is_treasurer|org_has_role|org_member_id)$/],
+  ["Community : votes, signatures, cas sociaux, projets, réunions, mobilité", /^(election_|signature_|social_case_|project_contribute$|meeting_check_in$|transfer_decide$)/],
+  ["Finance : cotisations, groupes, parrainage, prêts, solidarité, comptabilité", /^(contribution_declare|group_|sponsorship_confirm|loan_|claim_decide|accounting_consolidate)/],
+  ["Hub : favoris, messages, préférences", /^hub_/],
   ["Pay : portefeuille", /^pay_/],
   ["Market : commandes", /^market_(create_order|cancel_order|pay_order|advance_order|create_group_order|join_group_order|close_group_order)$/],
   ["Market : revendeur", /^market_(submit_reseller_application|review_reseller_application)$/],
+  ["Market : services et avis", /^market_(request_service|respond_service_request|review_service|review_reseller)$/],
   ["Market : investissement", /^market_(create_investment_project|update_investment_rules|close_investment_project|invest|investment_commission_rate|declare_investment_profit|review_investment_profit)$/],
   ["Back-office (administrateurs de la plateforme)", /^(admin_|is_platform_admin$)/],
 ];
@@ -354,6 +392,36 @@ const MOVED = {
   "admin/users/[id]/suspend": "`admin_set_user_suspended`",
 };
 
+// Routes dont la logique est passée en base par les migrations 0027 et 0028.
+const MOVED_LATER = {
+  "organizations/[orgId]/elections/[electionId]/candidates": ["0027", "`election_declare_candidacy`"],
+  "organizations/[orgId]/elections/[electionId]/votes": ["0027", "`election_cast_vote`"],
+  "organizations/[orgId]/elections/[electionId]": ["0027", "`election_close`"],
+  "organizations/[orgId]/signatures": ["0027", "`signature_create` (POST) ; lecture : tables `signature_requests`, `signature_signatories`"],
+  "organizations/[orgId]/signatures/[signatureId]/sign": ["0027", "`signature_sign`"],
+  "organizations/[orgId]/signatures/[signatureId]/reject": ["0027", "`signature_reject`"],
+  "organizations/[orgId]/social-cases": ["0027", "`social_case_create` (POST) ; lecture : table `social_cases`"],
+  "organizations/[orgId]/social-cases/[socialCaseId]": ["0027", "`social_case_review`, `social_case_disburse`"],
+  "organizations/[orgId]/social-cases/[socialCaseId]/contributions": ["0027", "`social_case_contribute`"],
+  "market/services/[serviceId]/reviews": ["0027", "`market_request_service`, `market_respond_service_request`, puis `market_review_service`"],
+  "pay/withdraw": ["0027", "Edge Function `pay-withdraw` (la fonction SQL `pay_withdraw` n'est plus appelable par un client)"],
+  "hub/favorites/toggle": ["0028", "`hub_toggle_favorite`"],
+  "hub/messages": ["0028", "`hub_send_message`"],
+  "hub/preferences": ["0028", "`hub_set_preferences`"],
+  "organizations/[orgId]/accounting/consolidation": ["0028", "`accounting_consolidate` (POST) ; lecture : table `consolidation_movements`"],
+  "organizations/[orgId]/contributions": ["0028", "`contribution_declare` (POST) ; lecture : table `contributions`"],
+  "organizations/[orgId]/financial-groups": ["0028", "`group_create` (POST) ; lecture : table `financial_groups`"],
+  "organizations/[orgId]/financial-groups/[groupId]/payments": ["0028", "`group_declare_payment`"],
+  "organizations/[orgId]/financial-groups/[groupId]/payments/[paymentId]/validate": ["0028", "`group_validate_payment`"],
+  "organizations/[orgId]/loans/[loanId]/decision": ["0028", "`loan_decide`"],
+  "organizations/[orgId]/loans/[loanId]/installments/[installmentId]/repay": ["0028", "`loan_repay_installment`"],
+  "organizations/[orgId]/meetings/[meetingId]/attendees/[attendeeId]": ["0028", "`meeting_check_in`"],
+  "organizations/[orgId]/projects/[projectId]/contributions": ["0028", "`project_contribute`"],
+  "organizations/[orgId]/relocations/[relocationId]/transfer-decision": ["0028", "`transfer_decide`"],
+  "organizations/[orgId]/solidarity/claims/[claimId]/decision": ["0028", "`claim_decide`"],
+  "organizations/[orgId]/sponsorship/requests/[requestId]/confirm": ["0028", "`sponsorship_confirm`"],
+};
+
 function routeSection() {
   const helpers = helperWrites();
   const rows = [];
@@ -399,6 +467,9 @@ function routeSection() {
     } else if (MOVED[route]) {
       status = "passé en base (0025)";
       target = MOVED[route];
+    } else if (MOVED_LATER[route]) {
+      status = `passé en base (${MOVED_LATER[route][0]})`;
+      target = MOVED_LATER[route][1];
     } else if (route.startsWith("demo-") || route === "(racine)") {
       status = "sans objet";
       target = "propre à l'application web (démonstration, contrôle de vie)";
@@ -421,6 +492,7 @@ function routeSection() {
   const count = (s) => rows.filter((r) => r.status === s).length;
   const out = [
     `**${rows.length} routes** : ${count("déjà en base")} déjà en base, ${count("passé en base (0025)")} passées en base par la migration 0025, ` +
+      `${count("passé en base (0027)")} par la migration 0027, ${count("passé en base (0028)")} par la migration 0028, ` +
       `${count("reste serveur → Edge Function")} en Edge Function, ${count("à passer en base")} restent à passer en base, ${count("sans objet")} sans objet.`,
     "",
   ];

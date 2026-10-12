@@ -110,7 +110,7 @@ Corrigez jusqu'à lire « Tout est en ordre. »
 
 ## 4. Installer la structure de la base (migrations)
 
-Les « migrations » sont les 26 fichiers (`0001` à `0026`) qui créent les tables, les règles de sécurité, les fonctions appelées par l'application et les tâches automatiques. Un script les applique toutes d'un coup, et annule tout au moindre problème : la base n'est jamais laissée dans un état intermédiaire.
+Les « migrations » sont les 28 fichiers (`0001` à `0028`) qui créent les tables, les règles de sécurité, les fonctions appelées par l'application et les tâches automatiques. Un script les applique toutes d'un coup, et annule tout au moindre problème : la base n'est jamais laissée dans un état intermédiaire.
 
 **4.1 — Regarder l'état de la base (ne modifie rien)**
 
@@ -126,10 +126,10 @@ Sur un projet neuf, toutes les lignes indiquent `ABSENTE`. Vérifiez sur la prem
 node --env-file=.env.production.local scripts/apply-migrations.mjs --dry-run --smoke
 ```
 
-Le script applique les 26 migrations, lance 224 tests de sécurité, puis **annule tout**. Vous devez lire :
+Le script applique les 28 migrations, lance 380 tests de sécurité, puis **annule tout**. Vous devez lire :
 
 - `26 migration(s)` en attente, chacune suivie de `OK` ;
-- `224/224 tests de fumée verts` ;
+- `380/380 tests de fumée verts` ;
 - `ESSAI À BLANC TERMINÉ : ROLLBACK effectué, la base n'a pas été modifiée.`
 
 Si une ligne indique `ÉCHEC`, arrêtez-vous ici et transmettez le message affiché à la personne qui maintient le projet. Rien n'a été modifié.
@@ -220,12 +220,13 @@ Deux réglages à vérifier au même endroit, dans **Authentication → Sign In 
 
 ## 6. Installer les fonctions serveur (Edge Functions)
 
-Cinq fonctions tournent chez Supabase, dans le dossier `supabase/functions/` du projet :
+Six fonctions tournent chez Supabase, dans le dossier `supabase/functions/` du projet :
 
 | Fonction | Rôle | Qui l'appelle |
 | --- | --- | --- |
 | `ai-assistant` | Assistant IA (la clé du fournisseur d'IA reste côté serveur) | L'application, avec le jeton de l'utilisateur |
 | `pay-topup-confirm` | Confirmation d'une recharge par l'opérateur Mobile Money | Le futur opérateur — **désactivée** tant que `PAY_WEBHOOK_SECRET` n'existe pas |
+| `pay-withdraw` | Retrait vers Mobile Money : seul chemin vers le débit d'un portefeuille | L'application, avec le jeton de l'utilisateur — **répond `503`** tant qu'aucun opérateur n'est intégré |
 | `investments-settle` | Dénouement à la demande des projets d'investissement échus | L'exploitation (la planification normale se fait en base, étape 7) |
 | `control-plane-push` | Envoi des statistiques au Control Plane GSG | La base, toutes les 15 minutes |
 | `control-plane` | Points d'accès interrogés par le Control Plane GSG | Le Kernel GSG |
@@ -271,7 +272,7 @@ supabase secrets set --env-file .env.functions.production.local
 supabase functions deploy --use-api
 ```
 
-Les cinq fonctions sont envoyées (l'option `--use-api` évite d'avoir à installer Docker). Vérification dans Supabase : menu **Edge Functions**, cinq lignes.
+Les six fonctions sont envoyées (l'option `--use-api` évite d'avoir à installer Docker). Vérification dans Supabase : menu **Edge Functions**, six lignes.
 
 **6.4 — Contrôle**
 
@@ -284,6 +285,14 @@ curl -i -X POST https://LA_REFERENCE.supabase.co/functions/v1/pay-topup-confirm
 ```
 
 Réponses attendues, dans l'ordre : `401` (pas de secret), `200` avec `{"released":0,"refunded":0,"expired":0,"failed":[]}`, et `404` (recharge réelle désactivée).
+
+Sur le projet de **test** uniquement, un parcours complet des six fonctions existe (60 vérifications : refus sans secret, jetons falsifiés ou rejoués, recharge confirmée une seule fois, retrait, chaîne planifiée) :
+
+```
+node --env-file=.env.local --env-file=.env.functions.local scripts/e2e-edge-functions.mjs
+```
+
+Il crée un compte et de l'argent fictifs, puis les supprime. **Ne le lancez jamais sur la production** : il refuse de démarrer si `APP_ENV` ne vaut pas `test`.
 
 ---
 
@@ -382,12 +391,12 @@ Cochez chaque ligne. N'ouvrez pas le service s'il en reste une.
 **Base de données**
 
 - [ ] *Database → Backups* dans Supabase montre des sauvegardes quotidiennes.
-- [ ] `node --env-file=.env.production.local scripts/db-state.mjs` : toutes les migrations `0001` à `0026` sont `PRÉSENTE`.
+- [ ] `node --env-file=.env.production.local scripts/db-state.mjs` : toutes les migrations `0001` à `0028` sont `PRÉSENTE`.
 - [ ] Dans la rubrique « Données » de cette même commande, les **deux journaux d'audit sont à 0** et il n'y a que les comptes que vous avez créés vous-même. Un journal d'audit ne peut pas être vidé : s'il n'est pas vierge, c'est qu'un test a été lancé sur la production (voir étape 11) ; mieux vaut alors repartir d'un projet Supabase neuf.
 
 **Fonctions et tâches automatiques**
 
-- [ ] Menu **Edge Functions** : cinq fonctions déployées ; les trois réponses de l'étape 6.4 sont celles attendues.
+- [ ] Menu **Edge Functions** : six fonctions déployées ; les trois réponses de l'étape 6.4 sont celles attendues.
 - [ ] `select jobname, schedule, active from cron.job;` montre deux tâches actives, et `cron.job_run_details` des exécutions réussies.
 
 **Personnes**

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { RpcError } from "@/lib/api/pay-rpc";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 
 export type AuthedContext =
@@ -22,8 +23,12 @@ export async function getAuthedContext(): Promise<AuthedContext> {
   return { supabase, user };
 }
 
-// Convertit une erreur interne en réponse JSON cohérente (404 si introuvable).
+// Convertit une erreur interne en réponse JSON cohérente : statut de la
+// fonction SQL si elle en porte un, 404 si introuvable, 500 sinon.
 export function apiError(err: unknown): NextResponse {
+  if (err instanceof RpcError) {
+    return NextResponse.json({ error: err.message }, { status: err.status });
+  }
   const message = err instanceof Error ? err.message : "Erreur interne";
   const status = message.includes("introuvable") ? 404 : 500;
   return NextResponse.json({ error: message }, { status });

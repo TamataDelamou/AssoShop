@@ -59,3 +59,27 @@ export function rpcRow<T>(data: unknown): T | null {
   const row = Array.isArray(data) ? data[0] : data;
   return (row as T) ?? null;
 }
+
+// Erreur métier levée par une fonction SQL, avec son statut HTTP. apiError()
+// (lib/api/auth.ts) la renvoie telle quelle au client.
+export class RpcError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "RpcError";
+  }
+}
+
+// À appeler quand supabase.rpc() renvoie une erreur. Pour un code connu, le
+// message de la fonction SQL (rédigé pour l'utilisateur) est conservé ; toute
+// autre erreur donne un 500 sans détail SQL.
+export function throwRpcError(error: unknown): never {
+  const { status, message } = mapPayRpcError(error);
+  const detail =
+    status !== 500 && error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : "";
+  throw new RpcError(detail || message, status);
+}

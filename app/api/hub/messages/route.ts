@@ -1,45 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse, rpcRow } from "@/lib/api/pay-rpc";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase, user } = ctx;
 
   const payload = (await request.json().catch(() => null)) as {
     conversation_id?: string;
     body?: string;
   } | null;
+  if (!payload?.conversation_id || !payload?.body?.trim()) {
+    return NextResponse.json({ error: "Message invalide" }, { status: 400 });
+  }
 
-  try {
-    if (!payload?.conversation_id || !payload?.body?.trim()) {
-      return NextResponse.json({ error: "Message invalide" }, { status: 400 });
-    }
-
-    const { data: conversation } = await supabase
-      .from("hub_conversations")
-      .select("id")
-      .eq("id", payload.conversation_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
-    if (!conversation) {
+  // Message et aperçu de la conversation écrits ensemble (fonction SQL
+  // hub_send_message, migration 0028).
+  const { data, error } = await ctx.supabase.rpc("hub_send_message", {
+    p_conversation_id: payload.conversation_id,
+    p_body: payload.body,
+  });
+  if (error) {
+    if (error.code === "PY018") {
       return NextResponse.json({ error: "Conversation introuvable" }, { status: 404 });
     }
-
-    const { data: message, error } = await supabase
-      .from("hub_messages")
-      .insert({ conversation_id: payload.conversation_id, sender: "me", body: payload.body })
-      .select()
-      .single();
-    if (error) throw error;
-
-    await supabase
-      .from("hub_conversations")
-      .update({ last_message: payload.body, updated_at: new Date().toISOString() })
-      .eq("id", payload.conversation_id);
-
-    return NextResponse.json(message);
-  } catch (err) {
-    return apiError(err);
+    return payRpcErrorResponse(error);
   }
+
+  return NextResponse.json(rpcRow(data));
 }

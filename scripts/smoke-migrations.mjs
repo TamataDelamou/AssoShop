@@ -1,4 +1,4 @@
-// Tests de fumée des migrations 0016 à 0026, exécutés DANS une transaction
+// Tests de fumée des migrations 0016 à 0028, exécutés DANS une transaction
 // ouverte par l'appelant (apply-migrations.mjs) ou, lancé seul, dans une
 // transaction qui se termine toujours par ROLLBACK : aucune donnée de test
 // n'est conservée.
@@ -408,8 +408,9 @@ export async function runSmokeTests(client) {
   check("portefeuille plateforme invisible pour un utilisateur", platformVisible.n === 0, `${platformVisible.n} ligne(s) visibles`);
 
   const beforeWithdraw = await platformBalance(client);
-  const withdrawal = await as(client, "authenticated", buyer, () =>
-    one(client, "select * from public.pay_withdraw(1000)"),
+  // Depuis 0027, le retrait n'est appelable que par le serveur (service_role).
+  const withdrawal = await as(client, "service_role", null, () =>
+    one(client, "select * from public.pay_withdraw($1, 1000)", [buyer]),
   );
   check(
     "la commission de retrait va au portefeuille plateforme",
@@ -1670,6 +1671,471 @@ export async function runSmokeTests(client) {
     Number(metrics2?.platform_wallet_balance) === (await platformBalance(client)),
     `valeur ${metrics2?.platform_wallet_balance}`,
   );
+
+  // ---- 17. Écritures réservées aux personnes autorisées (0027) ----
+  // Bloc isolé : ses variables ne croisent pas celles des sections précédentes.
+  {
+  // Appel d'une fonction par un utilisateur connecté.
+  const call = (user, sql, params = []) => as(client, "authenticated", user, () => one(client, sql, params));
+  // L'appel doit échouer avec le code attendu.
+  const refused = async (name, code, user, sql, params = []) => {
+    const failure = await expectError(client, () =>
+      user === null
+        ? client.query(sql, params)
+        : as(client, "authenticated", user, () => client.query(sql, params)),
+    );
+    check(name, failure?.code === code, failure ? `${failure.code} ${failure.message}` : "accepté !");
+  };
+
+  const orgAdmin = await createUser(client, "org-admin");
+  const president = await createUser(client, "president");
+  const treasurer = await createUser(client, "tresorier");
+  const alice = await createUser(client, "alice");
+  const bob = await createUser(client, "bob");
+  const carol = await createUser(client, "carol");
+  const stranger = await createUser(client, "etranger");
+
+  const gov = (await one(client, "insert into public.organizations (name, created_by) values ('Association de fumée', $1) returning id", [orgAdmin])).id;
+  await client.query(
+    "insert into public.memberships (organization_id, user_id, role) values ($1, $2, 'admin'), ($1, $3, 'member'), ($1, $4, 'member')",
+    [gov, orgAdmin, alice, carol],
+  );
+  const memberOf = {};
+  for (const [key, user, name, role] of [
+    ["president", president, "Présidente", "president"],
+    ["treasurer", treasurer, "Trésorier", "treasurer"],
+    ["alice", alice, "Alice", "member"],
+    ["bob", bob, "Bob", "member"],
+    ["carol", carol, "Carol", "member"],
+    ["ghost", null, "Sans compte", "member"],
+  ]) {
+    memberOf[key] = (
+      await one(
+        client,
+        "insert into public.members (organization_id, user_id, name, status, role) values ($1, $2, $3, 'active', $4) returning id",
+        [gov, user, name, role],
+      )
+    ).id;
+  }
+
+  check(
+    "rôles lus en base : bureau, trésorerie, membre actif",
+    (await call(president, "select public.org_is_bureau($1) as v", [gov])).v === true &&
+      (await call(president, "select public.org_is_treasurer($1) as v", [gov])).v === false &&
+      (await call(treasurer, "select public.org_is_treasurer($1) as v", [gov])).v === true &&
+      (await call(bob, "select public.org_is_member($1) as v", [gov])).v === true &&
+      (await call(bob, "select public.org_is_bureau($1) as v", [gov])).v === false &&
+      (await call(stranger, "select public.org_is_member($1) as v", [gov])).v === false &&
+      (await call(orgAdmin, "select public.org_is_bureau($1) as v", [gov])).v === true,
+  );
+
+  // Votes
+  const election = (await one(client, "insert into public.elections (organization_id, title, position, status) values ($1, 'Bureau 2027', 'president', 'open') returning id", [gov])).id;
+  const aliceCandidate = await call(alice, "select * from public.election_declare_candidacy($1)", [election]);
+  check("un membre déclare sa propre candidature", aliceCandidate.member_id === memberOf.alice && aliceCandidate.votes === 0);
+  await refused("candidature en double refusée", "PY019", alice, "select public.election_declare_candidacy($1)", [election]);
+  await refused("un membre ne déclare pas la candidature d'un autre", "PY006", bob, "select public.election_declare_candidacy($1, $2)", [election, memberOf.carol]);
+  await refused("candidature refusée à un étranger à l'organisation", "PY006", stranger, "select public.election_declare_candidacy($1)", [election]);
+  const bobCandidate = await call(president, "select * from public.election_declare_candidacy($1, $2)", [election, memberOf.bob]);
+  check("le bureau déclare la candidature d'un membre", bobCandidate.member_id === memberOf.bob);
+
+  await refused("modification directe du nombre de voix refusée", "42501", alice, "update public.election_candidates set votes = 999 where id = $1", [aliceCandidate.id]);
+  await refused("candidature directe (hors fonction) refusée", "42501", orgAdmin, "insert into public.election_candidates (election_id, member_id, votes) values ($1, 'x', 50)", [election]);
+  await refused("bulletin direct (hors fonction) refusé", "42501", alice, "insert into public.election_votes (election_id, candidate_id, voter_id) values ($1, $2, $3)", [election, aliceCandidate.id, alice]);
+  await refused("vote refusé à un étranger à l'organisation", "PY006", stranger, "select public.election_cast_vote($1, $2)", [election, aliceCandidate.id]);
+  await call(alice, "select public.election_cast_vote($1, $2)", [election, bobCandidate.id]);
+  await refused("second vote du même membre refusé", "PY019", alice, "select public.election_cast_vote($1, $2)", [election, aliceCandidate.id]);
+  await call(bob, "select public.election_cast_vote($1, $2)", [election, bobCandidate.id]);
+  await call(treasurer, "select public.election_cast_vote($1, $2)", [election, aliceCandidate.id]);
+  const tally = (await client.query("select member_id, votes from public.election_candidates where election_id = $1", [election])).rows;
+  check(
+    "un vote par membre, compté en base",
+    tally.find((t) => t.member_id === memberOf.bob)?.votes === 2 && tally.find((t) => t.member_id === memberOf.alice)?.votes === 1,
+    JSON.stringify(tally),
+  );
+  const ownBallots = await call(bob, "select count(*)::int as n from public.election_votes where election_id = $1", [election]);
+  check("chacun ne lit que son propre bulletin", ownBallots.n === 1, `${ownBallots.n} bulletin(s) visibles`);
+
+  await refused("clôture refusée à un simple membre", "PY006", alice, "select public.election_close($1)", [election]);
+  await refused("réouverture ou modification directe du scrutin refusée", "42501", orgAdmin, "update public.elections set status = 'closed' where id = $1", [election]);
+  const closed = await call(president, "select * from public.election_close($1)", [election]);
+  check("clôture par le président", closed.status === "closed" && closed.end_date !== null);
+  await refused("vote après clôture refusé (RG-C06)", "PY019", carol, "select public.election_cast_vote($1, $2)", [election, bobCandidate.id]);
+  await refused("candidature après clôture refusée", "PY019", carol, "select public.election_declare_candidacy($1)", [election]);
+  await refused("voix non modifiables après clôture, même par le serveur", "PY019", null, "update public.election_candidates set votes = 50 where election_id = $1", [election]);
+  await refused("scrutin clôturé non rouvrable, même par le serveur", "PY019", null, "update public.elections set status = 'open' where id = $1", [election]);
+
+  // Signatures
+  await refused("demande de signature directe (hors fonction) refusée", "42501", orgAdmin, "insert into public.signature_requests (organization_id, title) values ($1, 'Directe')", [gov]);
+  await refused("demande de signature refusée à un simple membre", "PY006", alice, "select public.signature_create($1, 'expense', 'Achat', $2::uuid[])", [gov, [memberOf.president]]);
+  await refused("signataire sans compte refusé", "PY009", president, "select public.signature_create($1, 'expense', 'Achat', $2::uuid[])", [gov, [memberOf.president, memberOf.ghost]]);
+  await refused("demande sans signataire refusée", "PY009", president, "select public.signature_create($1, 'expense', 'Achat', '{}'::uuid[])", [gov]);
+  const signature = await call(president, "select * from public.signature_create($1, 'expense', 'Achat de matériel', $2::uuid[], 'Sono', 6000000)", [gov, [memberOf.president, memberOf.treasurer]]);
+  const lines = (await client.query("select user_id, name, role, signed_at from public.signature_signatories where request_id = $1", [signature.id])).rows;
+  check(
+    "demande et signataires créés ensemble, demandeur établi en base",
+    signature.status === "pending" && signature.requested_by === "Présidente" && signature.requested_by_user_id === president &&
+      lines.length === 2 && lines.every((l) => l.user_id && l.signed_at === null),
+    JSON.stringify(lines),
+  );
+  await refused("signature refusée à qui n'est pas signataire", "PY006", alice, "select public.signature_sign($1)", [signature.id]);
+  await refused("signature directe de la ligne d'un autre refusée", "42501", treasurer, "update public.signature_signatories set signed_at = now() where request_id = $1", [signature.id]);
+  await refused("clôture directe de la demande refusée", "42501", alice, "update public.signature_requests set status = 'signed' where id = $1", [signature.id]);
+  let signed = await call(treasurer, "select * from public.signature_sign($1)", [signature.id]);
+  const signedLines = (await client.query("select user_id from public.signature_signatories where request_id = $1 and signed_at is not null", [signature.id])).rows;
+  check("chacun ne signe que sa propre ligne", signed.status === "pending" && signedLines.length === 1 && signedLines[0].user_id === treasurer);
+  await refused("double signature refusée", "PY019", treasurer, "select public.signature_sign($1)", [signature.id]);
+  signed = await call(president, "select * from public.signature_sign($1)", [signature.id]);
+  check("la demande se clôt quand toutes les lignes sont signées", signed.status === "signed" && signed.decided_at !== null);
+  await refused("refus d'une demande déjà signée impossible", "PY019", president, "select public.signature_reject($1)", [signature.id]);
+  const signature2 = await call(orgAdmin, "select * from public.signature_create($1, 'minutes', 'PV', $2::uuid[])", [gov, [memberOf.treasurer]]);
+  await refused("refus réservé aux signataires désignés", "PY006", alice, "select public.signature_reject($1)", [signature2.id]);
+  const rejected = await call(treasurer, "select * from public.signature_reject($1)", [signature2.id]);
+  check("refus par un signataire désigné", rejected.status === "rejected");
+  await refused("signature d'une demande refusée impossible", "PY019", treasurer, "select public.signature_sign($1)", [signature2.id]);
+
+  // Cas sociaux
+  await refused("cas social direct (hors fonction) refusé", "42501", orgAdmin, "insert into public.social_cases (organization_id, title, status, collected_amount) values ($1, 'Direct', 'funded', 999999)", [gov]);
+  await refused("déclaration refusée à un étranger à l'organisation", "PY006", stranger, "select public.social_case_create($1, 'Aide', 10000)", [gov]);
+  await refused("objectif nul refusé", "PY001", alice, "select public.social_case_create($1, 'Aide', 0)", [gov]);
+  const socialCase = await call(alice, "select * from public.social_case_create($1, 'Hospitalisation', 10000, 'Soins', 'illness', 'Bob', $2, false)", [gov, bob]);
+  check(
+    "cas déclaré par un membre : soumis, rien de collecté",
+    socialCase.status === "submitted" && socialCase.collected_amount === 0 && socialCase.declared_by === alice && socialCase.beneficiary_user_id === bob,
+  );
+  await refused("statut et montant collecté non modifiables directement", "42501", alice, "update public.social_cases set status = 'funded', collected_amount = 10000 where id = $1", [socialCase.id]);
+  await refused("même l'administrateur ne modifie plus un cas directement", "42501", orgAdmin, "update public.social_cases set status = 'disbursed' where id = $1", [socialCase.id]);
+  const seenByDeclarer = await call(alice, "select count(*)::int as n from public.social_cases where id = $1", [socialCase.id]);
+  const seenByOther = await call(carol, "select count(*)::int as n from public.social_cases where id = $1", [socialCase.id]);
+  check("cas non validé : visible du déclarant, pas des autres membres (RG-C05)", seenByDeclarer.n === 1 && seenByOther.n === 0, `déclarant ${seenByDeclarer.n}, autre ${seenByOther.n}`);
+  await refused("contribution avant validation refusée", "PY019", carol, "select public.social_case_contribute($1, 1000)", [socialCase.id]);
+  await refused("validation refusée à un simple membre", "PY006", alice, "select public.social_case_review($1, true)", [socialCase.id]);
+  const ownCase = await call(alice, "select * from public.social_case_create($1, 'Sinistre', 5000, '', 'other', 'Trésorier', $2)", [gov, treasurer]);
+  await refused("un membre du bureau ne valide pas son propre cas", "PY006", treasurer, "select public.social_case_review($1, true)", [ownCase.id]);
+  const approved = await call(president, "select * from public.social_case_review($1, true, 'Accord du comité')", [socialCase.id]);
+  check("validation par le comité", approved.status === "approved" && approved.committee_note === "Accord du comité");
+  await refused("seconde décision du comité refusée", "PY019", president, "select public.social_case_review($1, false)", [socialCase.id]);
+  const seenAfter = await call(carol, "select count(*)::int as n from public.social_cases where id = $1", [socialCase.id]);
+  check("cas validé : visible des membres", seenAfter.n === 1);
+  await refused("décaissement avant objectif refusé (RG-C05)", "PY019", treasurer, "select public.social_case_disburse($1)", [socialCase.id]);
+  await refused("contribution refusée à un étranger à l'organisation", "PY006", stranger, "select public.social_case_contribute($1, 1000)", [socialCase.id]);
+  await refused("contribution directe (hors fonction) refusée", "42501", carol, "insert into public.social_case_contributors (case_id, name, amount) values ($1, 'Carol', 10000)", [socialCase.id]);
+  let funded = await call(carol, "select * from public.social_case_contribute($1, 4000)", [socialCase.id]);
+  check("contribution : montant collecté calculé en base", funded.collected_amount === 4000 && funded.status === "approved");
+  funded = await call(alice, "select * from public.social_case_contribute($1, 6000, true)", [socialCase.id]);
+  const contributors = (await client.query("select name, amount, anonymous, user_id from public.social_case_contributors where case_id = $1 order by amount", [socialCase.id])).rows;
+  check(
+    "objectif atteint : cas financé, contributeur nommé en base, anonymat respecté",
+    funded.collected_amount === 10000 && funded.status === "funded" &&
+      contributors[0].name === "Carol" && contributors[0].user_id === carol &&
+      contributors[1].name === "Donateur anonyme" && contributors[1].user_id === null,
+    JSON.stringify(contributors),
+  );
+  const hiddenList = await call(carol, "select count(*)::int as n from public.social_case_contributors where case_id = $1", [socialCase.id]);
+  const bureauList = await call(orgAdmin, "select count(*)::int as n from public.social_case_contributors where case_id = $1", [socialCase.id]);
+  check("liste des contributeurs masquée si le cas l'exige, sauf au bureau (RG-C05)", hiddenList.n === 0 && bureauList.n === 2, `membre ${hiddenList.n}, bureau ${bureauList.n}`);
+  await refused("décaissement refusé à un simple membre", "PY006", alice, "select public.social_case_disburse($1)", [socialCase.id]);
+  const disbursed = await call(treasurer, "select * from public.social_case_disburse($1)", [socialCase.id]);
+  check("décaissement par la trésorerie une fois l'objectif atteint", disbursed.status === "disbursed" && disbursed.disbursed_at !== null);
+  await refused("second décaissement refusé", "PY019", treasurer, "select public.social_case_disburse($1)", [socialCase.id]);
+  const caseEvents = (await client.query("select event_type from public.audit_events where entity_id = $1", [socialCase.id])).rows.map((e) => e.event_type);
+  check(
+    "cas social : chaque étape au journal d'audit",
+    ["social_case.approved", "social_case.funded", "social_case.disbursed"].every((t) => caseEvents.includes(t)),
+    caseEvents.join(", "),
+  );
+
+  // Avis (RG-M04)
+  const service = await call(seller, "insert into public.market_services (provider_user_id, title, price) values ($1, 'Plomberie', 50000) returning *", [seller]);
+  check("un prestataire publie toujours son service", service.title === "Plomberie" && Number(service.rating) === 0 && service.reviews_count === 0);
+  await refused("un prestataire ne fixe pas sa note à la création", "42501", seller, "insert into public.market_services (provider_user_id, title, rating, reviews_count) values ($1, 'Triche', 5, 100)", [seller]);
+  await refused("un prestataire ne modifie pas sa note", "42501", seller, "update public.market_services set rating = 5, reviews_count = 100 where id = $1", [service.id]);
+  await refused("avis direct (hors fonction) refusé", "42501", buyer, "insert into public.market_service_reviews (service_id, author_name, rating) values ($1, 'Faux', 5)", [service.id]);
+  await refused("avis refusé sans sollicitation (RG-M04)", "PY006", buyer, "select public.market_review_service($1, 5, 'Parfait')", [service.id]);
+  await refused("un prestataire ne sollicite pas son propre service", "PY006", seller, "select public.market_request_service($1)", [service.id]);
+  const request = await call(buyer, "select * from public.market_request_service($1, 'Fuite à réparer')", [service.id]);
+  const requestAgain = await call(buyer, "select * from public.market_request_service($1)", [service.id]);
+  check("sollicitation enregistrée, rejouable sans doublon", request.status === "requested" && requestAgain.id === request.id);
+  await refused("sollicitation directe (hors fonction) refusée", "42501", outsider, "insert into public.market_service_requests (service_id, user_id, status) values ($1, $2, 'confirmed')", [service.id, outsider]);
+  await refused("avis refusé tant que la sollicitation n'est pas confirmée", "PY006", buyer, "select public.market_review_service($1, 5)", [service.id]);
+  await refused("le demandeur ne confirme pas sa propre sollicitation", "PY006", buyer, "select public.market_respond_service_request($1, true)", [request.id]);
+  const requestsSeen = await call(outsider, "select count(*)::int as n from public.market_service_requests where id = $1", [request.id]);
+  check("sollicitation invisible pour un tiers", requestsSeen.n === 0);
+  const confirmedRequest = await call(seller, "select * from public.market_respond_service_request($1, true)", [request.id]);
+  check("confirmation par le prestataire", confirmedRequest.status === "confirmed");
+  await refused("note hors de 1 à 5 refusée", "PY009", buyer, "select public.market_review_service($1, 9)", [service.id]);
+  const review = await call(buyer, "select * from public.market_review_service($1, 4, 'Bon travail')", [service.id]);
+  const rated = await one(client, "select rating, reviews_count from public.market_services where id = $1", [service.id]);
+  check(
+    "avis publié après sollicitation confirmée, note recalculée en base",
+    review.user_id === buyer && review.solicited === true && Number(rated.rating) === 4 && rated.reviews_count === 1,
+    JSON.stringify(rated),
+  );
+  await refused("second avis du même utilisateur refusé", "PY019", buyer, "select public.market_review_service($1, 1)", [service.id]);
+  await refused("un prestataire n'évalue pas son propre service", "PY006", seller, "select public.market_review_service($1, 5)", [service.id]);
+
+  const shop = (await one(client, "insert into public.market_resellers (user_id, company_name) values ($1, 'Boutique de fumée') returning id", [president])).id;
+  await refused("avis sur un revendeur refusé sans commande livrée", "PY006", alice, "select public.market_review_reseller($1, 5)", [shop]);
+  await client.query("insert into public.market_orders (buyer_id, reseller_id, total, status, paid) values ($1, $2, 1000, 'delivered', true)", [alice, shop]);
+  const shopReview = await call(alice, "select * from public.market_review_reseller($1, 3, 'Correct')", [shop]);
+  const shopRating = await one(client, "select rating from public.market_resellers where id = $1", [shop]);
+  check("avis sur un revendeur après commande livrée", shopReview.user_id === alice && Number(shopRating.rating) === 3);
+  await refused("un revendeur n'évalue pas sa propre boutique", "PY006", president, "select public.market_review_reseller($1, 5)", [shop]);
+  await refused("avis direct sur un revendeur refusé", "42501", bob, "insert into public.market_reviews (reseller_id, author_name, rating) values ($1, 'Faux', 5)", [shop]);
+
+  // Retrait
+  await refused("pay_withdraw refusée à un utilisateur, même pour son propre compte", "42501", buyer, "select public.pay_withdraw($1, 1000)", [buyer]);
+  await refused("l'ancienne signature de pay_withdraw n'existe plus", "42883", buyer, "select public.pay_withdraw(1000)");
+  const balanceBeforeRefusal = await balanceOf(client, buyer);
+  const overdraft = await expectError(client, () =>
+    as(client, "service_role", null, () => client.query("select public.pay_withdraw($1, 2000000000)", [buyer])),
+  );
+  check(
+    "retrait serveur au-delà du solde refusé, solde intact",
+    overdraft?.code === "PY003" && (await balanceOf(client, buyer)) === balanceBeforeRefusal,
+    overdraft ? `${overdraft.code} ${overdraft.message}` : "accepté !",
+  );
+  const noWallet = await expectError(client, () =>
+    as(client, "service_role", null, () => client.query("select public.pay_withdraw($1, 1000)", [stranger])),
+  );
+  check("retrait serveur sans portefeuille refusé", noWallet?.code === "PY002", noWallet ? `${noWallet.code} ${noWallet.message}` : "accepté !");
+
+  // ---- 18. Opérations atomiques (0028) ----
+  // Hub
+  let favorites = (await as(client, "authenticated", alice, () => client.query("select * from public.hub_toggle_favorite('product', 'Riz 50 kg', 'Marché')"))).rows;
+  check("favori ajouté", favorites.length === 1 && favorites[0].user_id === alice && favorites[0].detail === "Marché");
+  favorites = (await as(client, "authenticated", alice, () => client.query("select * from public.hub_toggle_favorite('product', 'Riz 50 kg')"))).rows;
+  check("favori retiré par la même bascule", favorites.length === 0);
+  await refused("favori sans libellé refusé", "PY009", alice, "select public.hub_toggle_favorite('product', '')");
+
+  const conversation = await call(alice, "insert into public.hub_conversations (user_id, participant) values ($1, 'Support') returning id", [alice]);
+  const message = await call(alice, "select * from public.hub_send_message($1, '  Bonjour  ')", [conversation.id]);
+  const preview = await one(client, "select last_message from public.hub_conversations where id = $1", [conversation.id]);
+  check("message et aperçu de la conversation écrits ensemble", message.body === "Bonjour" && message.sender === "me" && preview.last_message === "Bonjour");
+  await refused("message dans la conversation d'un autre refusé", "PY018", bob, "select public.hub_send_message($1, 'Intrus')", [conversation.id]);
+  await refused("message vide refusé", "PY009", alice, "select public.hub_send_message($1, '   ')", [conversation.id]);
+
+  let preferences = (await as(client, "authenticated", alice, () =>
+    client.query("select * from public.hub_set_preferences($1::jsonb)", [JSON.stringify([{ channel: "sms", event_type: "payment", enabled: false }, { event_type: "meeting" }])]),
+  )).rows;
+  check(
+    "préférences remplacées d'un bloc",
+    preferences.length === 2 && preferences.find((p) => p.event_type === "payment")?.enabled === false &&
+      preferences.find((p) => p.event_type === "meeting")?.channel === "in_app",
+    JSON.stringify(preferences),
+  );
+  preferences = (await as(client, "authenticated", alice, () => client.query("select * from public.hub_set_preferences('[]'::jsonb)"))).rows;
+  check("préférences vidées", preferences.length === 0);
+  await refused("préférences mal formées refusées", "PY009", alice, "select public.hub_set_preferences('{}'::jsonb)");
+
+  // Cotisations
+  await refused("cotisation « payée » insérée directement refusée", "42501", alice, "insert into public.contributions (organization_id, member_id, amount, status) values ($1, $2, 5000, 'paid')", [gov, memberOf.alice]);
+  await refused("déclaration de cotisation refusée à un étranger", "PY006", stranger, "select public.contribution_declare($1, $2, 5000, 'cash')", [gov, memberOf.alice]);
+  await refused("méthode de paiement inconnue refusée", "PY009", alice, "select public.contribution_declare($1, $2, 5000, 'chèque')", [gov, memberOf.alice]);
+  const contribution = await call(alice, "select * from public.contribution_declare($1, $2, 5000, 'online')", [gov, memberOf.alice]);
+  check(
+    "cotisation déclarée : en attente de la trésorerie, même « en ligne »",
+    contribution.status === "pending" && contribution.paid_at === null && contribution.paid_by === "Alice" && contribution.member_id === memberOf.alice,
+    JSON.stringify(contribution),
+  );
+  const due = await one(client, "insert into public.contributions (organization_id, member_id, amount, period_label, status) values ($1, $2, 3000, 'Mars 2026', 'due') returning id", [gov, memberOf.bob]);
+  await refused("cotisation d'un autre membre non détournable", "PY009", alice, "select public.contribution_declare($1, $2, 3000, 'cash', $3)", [gov, memberOf.alice, due.id]);
+  const thirdParty = await call(alice, "select * from public.contribution_declare($1, $2, 3000, 'cash', $3)", [gov, memberOf.bob, due.id]);
+  check("paiement pour un tiers : payeur et bénéficiaire distincts", thirdParty.status === "pending" && thirdParty.paid_by === "Alice" && thirdParty.member_id === memberOf.bob && thirdParty.period_label === "Mars 2026");
+  await refused("cotisation déjà déclarée non redéclarable", "PY019", bob, "select public.contribution_declare($1, $2, 3000, 'cash', $3)", [gov, memberOf.bob, due.id]);
+
+  // Groupes financiers
+  const groupsBefore = (await one(client, "select count(*)::int as n from public.financial_groups where organization_id = $1", [gov])).n;
+  await refused("création de groupe refusée à un simple membre", "PY006", alice, "select public.group_create($1, 'Tontine', 'tontine', 10000, 'weekly', 5)", [gov]);
+  await refused("groupe inséré directement refusé", "42501", orgAdmin, "insert into public.financial_groups (organization_id, name) values ($1, 'Direct')", [gov]);
+  await refused("type de groupe inconnu refusé", "PY009", president, "select public.group_create($1, 'Tontine', 'loterie', 10000, 'weekly', 5)", [gov]);
+  check("aucun groupe créé par les tentatives refusées", (await one(client, "select count(*)::int as n from public.financial_groups where organization_id = $1", [gov])).n === groupsBefore);
+  const group = await call(president, "select * from public.group_create($1, 'Tontine du marché', 'tontine', 10000, 'weekly', 3, null, 5, '2026-11-02', $2::text[])", [gov, ["Fatou", "Moussa", "Hors quota"]]);
+  const groupMembers = (await client.query("select id, name, role, user_id from public.group_members where group_id = $1", [group.id])).rows;
+  const turns = (await client.query("select member_name, position, expected_date from public.group_turns where group_id = $1 order by position", [group.id])).rows;
+  const settings = (await client.query("select visibility from public.group_settings where group_id = $1", [group.id])).rows;
+  check(
+    "groupe, créateur, membres, tours et réglages créés ensemble",
+    group.status === "forming" && group.raised_amount === 0 &&
+      groupMembers.length === 3 && groupMembers.find((m) => m.role === "creator")?.user_id === president &&
+      turns.length === 2 && turns[0].member_name === "Fatou" && turns[1].position === 2 &&
+      new Date(turns[1].expected_date) - new Date(turns[0].expected_date) === 7 * 86400000 &&
+      settings.length === 1 && settings[0].visibility === "private",
+    JSON.stringify({ members: groupMembers.length, turns, settings }),
+  );
+
+  const aliceGroupMember = (await one(client, "insert into public.group_members (group_id, user_id, name, role) values ($1, $2, 'Alice', 'member') returning id", [group.id, alice])).id;
+  const fatou = groupMembers.find((m) => m.name === "Fatou").id;
+  await refused("versement déclaré au nom d'un autre refusé", "PY006", alice, "select public.group_declare_payment($1, $2, 10000, 'cash')", [group.id, fatou]);
+  await refused("versement refusé à un étranger à l'organisation", "PY006", stranger, "select public.group_declare_payment($1, $2, 10000, 'cash')", [group.id, aliceGroupMember]);
+  await refused("versement inséré directement refusé", "42501", orgAdmin, "insert into public.group_payments (group_id, member_name, amount, status) values ($1, 'Direct', 999999, 'confirmed')", [group.id]);
+  const groupPayment = await call(alice, "select * from public.group_declare_payment($1, $2, 10000, 'mobile', $3)", [group.id, aliceGroupMember, fatou]);
+  check(
+    "versement déclaré : en attente, total du groupe inchangé (RG-F05), bénéficiaire distinct (RG-F04)",
+    groupPayment.status === "pending" && groupPayment.paid_at === null && groupPayment.member_name === "Alice" && groupPayment.paid_for_member_name === "Fatou" &&
+      (await one(client, "select raised_amount from public.financial_groups where id = $1", [group.id])).raised_amount === 0,
+    JSON.stringify(groupPayment),
+  );
+  await refused("validation d'un versement refusée à son auteur simple membre", "PY006", alice, "select public.group_validate_payment($1)", [groupPayment.id]);
+  await refused("validation directe d'un versement refusée", "42501", orgAdmin, "update public.group_payments set status = 'confirmed' where id = $1", [groupPayment.id]);
+  const validated = await call(treasurer, "select * from public.group_validate_payment($1)", [groupPayment.id]);
+  check(
+    "validation par la trésorerie : versement confirmé et total mis à jour ensemble",
+    validated.status === "confirmed" && validated.paid_at !== null &&
+      (await one(client, "select raised_amount from public.financial_groups where id = $1", [group.id])).raised_amount === 10000,
+  );
+  await refused("double validation refusée, total non compté deux fois", "PY019", treasurer, "select public.group_validate_payment($1)", [groupPayment.id]);
+  const fatouPayment = await call(treasurer, "select * from public.group_declare_payment($1, $2, 10000, 'cash')", [group.id, fatou]);
+  await call(president, "select public.group_validate_payment($1)", [fatouPayment.id]);
+  check(
+    "la trésorerie déclare pour un membre sans compte ; le créateur du groupe valide",
+    (await one(client, "select raised_amount from public.financial_groups where id = $1", [group.id])).raised_amount === 20000,
+  );
+  const paymentEvents = (await client.query("select event_type from public.audit_events where entity_id = $1", [groupPayment.id])).rows;
+  check("validation du versement au journal d'audit", paymentEvents.some((e) => e.event_type === "group_payment.validated"));
+
+  // Parrainage (RG-F02)
+  const digits = `2246${String(Date.now()).slice(-8)}`;
+  const invitee = (
+    await one(
+      client,
+      `insert into auth.users (id, instance_id, aud, role, email, phone, phone_confirmed_at, created_at, updated_at)
+       values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', $1, $2, now(), now(), now())
+       returning id`,
+      [`smoke-invite-${Date.now()}@assoshop.invalid`, digits],
+    )
+  ).id;
+  const sponsorship = await one(
+    client,
+    "insert into public.sponsorship_requests (group_id, sponsor_name, invitee_name, invitee_phone, status) values ($1, 'Alice', 'Ibrahima', $2, 'pending') returning id",
+    [group.id, `+${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`],
+  );
+  await refused("confirmation avant l'accord du parrain refusée", "PY019", invitee, "select public.sponsorship_confirm($1)", [sponsorship.id]);
+  await refused("l'administrateur ne confirme pas à la place du nouveau membre", "42501", orgAdmin, "update public.sponsorship_requests set status = 'confirmed' where id = $1", [sponsorship.id]);
+  await as(client, "authenticated", orgAdmin, () => client.query("update public.sponsorship_requests set status = 'sponsor_accepted' where id = $1", [sponsorship.id]));
+  await refused("confirmation refusée à un autre que l'invité", "PY006", alice, "select public.sponsorship_confirm($1)", [sponsorship.id]);
+  await refused("groupe complet : adhésion refusée", "PY019", invitee, "select public.sponsorship_confirm($1)", [sponsorship.id]);
+  await client.query("update public.financial_groups set max_members = 10 where id = $1", [group.id]);
+  const confirmedSponsorship = await call(invitee, "select * from public.sponsorship_confirm($1)", [sponsorship.id]);
+  const joined = await one(client, "select count(*)::int as n from public.group_members where group_id = $1 and user_id = $2 and name = 'Ibrahima'", [group.id, invitee]);
+  check("le nouveau membre confirme lui-même : adhésion créée (RG-F02)", confirmedSponsorship.status === "confirmed" && confirmedSponsorship.invitee_user_id === invitee && joined.n === 1);
+  await refused("seconde confirmation refusée", "PY019", invitee, "select public.sponsorship_confirm($1)", [sponsorship.id]);
+
+  // Prêts
+  const loan = await one(
+    client,
+    "insert into public.loans (group_id, member_id, member_name, amount, interest_rate, status) values ($1, $2, 'Alice', 10000, 10, 'requested') returning id",
+    [group.id, aliceGroupMember],
+  );
+  await refused("prêt non décidable avant confirmation du parrain (RG-F06)", "PY019", president, "select public.loan_decide($1, true)", [loan.id]);
+  await client.query("update public.loans set status = 'sponsor_confirmed' where id = $1", [loan.id]);
+  await refused("décision de prêt refusée à un simple membre", "PY006", alice, "select public.loan_decide($1, true)", [loan.id]);
+  const ownLoan = await one(
+    client,
+    "insert into public.loans (group_id, member_id, member_name, amount, interest_rate, status) values ($1, $2, 'Présidente', 5000, 0, 'sponsor_confirmed') returning id",
+    [group.id, groupMembers.find((m) => m.role === "creator").id],
+  );
+  await refused("un membre du bureau ne décide pas de son propre prêt", "PY006", president, "select public.loan_decide($1, true)", [ownLoan.id]);
+  const decidedLoan = await call(president, "select * from public.loan_decide($1, true)", [loan.id]);
+  const installments = (await client.query("select id, position, amount, status from public.loan_installments where loan_id = $1 order by position", [loan.id])).rows;
+  check(
+    "prêt approuvé et échéances créés ensemble",
+    decidedLoan.status === "approved" && decidedLoan.total_due === 11000 && installments.length === 3 &&
+      installments.reduce((sum, i) => sum + i.amount, 0) === 11000 && installments.every((i) => i.status === "pending"),
+    JSON.stringify(installments.map((i) => i.amount)),
+  );
+  await refused("seconde décision sur le prêt refusée", "PY019", president, "select public.loan_decide($1, false)", [loan.id]);
+  await refused("échéance insérée directement refusée", "42501", orgAdmin, "insert into public.loan_installments (loan_id, position, amount) values ($1, 4, 1)", [loan.id]);
+  await refused("remboursement refusé hors trésorerie", "PY006", president, "select public.loan_repay_installment($1)", [installments[0].id]);
+  await refused("échéance marquée payée directement refusée", "42501", orgAdmin, "update public.loan_installments set status = 'paid' where id = $1", [installments[0].id]);
+  let repaid = await call(treasurer, "select * from public.loan_repay_installment($1)", [installments[0].id]);
+  check("échéance remboursée et total du prêt mis à jour ensemble", repaid.repaid_amount === installments[0].amount && repaid.status === "approved");
+  await refused("échéance déjà remboursée non rejouable", "PY019", treasurer, "select public.loan_repay_installment($1)", [installments[0].id]);
+  await call(treasurer, "select public.loan_repay_installment($1)", [installments[1].id]);
+  repaid = await call(treasurer, "select * from public.loan_repay_installment($1)", [installments[2].id]);
+  check("prêt soldé à la dernière échéance", repaid.status === "repaid" && repaid.repaid_amount === 11000);
+  const rejectedLoan = await call(orgAdmin, "select * from public.loan_decide($1, false)", [ownLoan.id]);
+  const noInstallments = await one(client, "select count(*)::int as n from public.loan_installments where loan_id = $1", [ownLoan.id]);
+  check("prêt refusé : aucune échéance", rejectedLoan.status === "rejected" && noInstallments.n === 0);
+
+  // Fonds de garantie
+  const claim = await one(
+    client,
+    "insert into public.insurance_claims (organization_id, member_id, member_name, amount, status) values ($1, $2, 'Bob', 4000, 'submitted') returning id",
+    [gov, memberOf.bob],
+  );
+  await refused("indemnisation refusée à un simple membre", "PY006", alice, "select public.claim_decide($1, true)", [claim.id]);
+  await refused("indemnisation refusée si le fonds ne la couvre pas", "PY003", president, "select public.claim_decide($1, true)", [claim.id]);
+  check("demande intacte après le refus", (await one(client, "select status from public.insurance_claims where id = $1", [claim.id])).status === "submitted");
+  await client.query(
+    "insert into public.guarantee_fund (organization_id, balance, total_collected) values ($1, 10000, 10000) on conflict (organization_id) do update set balance = 10000, total_collected = 10000, total_used = 0",
+    [gov],
+  );
+  await refused("décision directe sur une demande refusée", "42501", orgAdmin, "update public.insurance_claims set status = 'approved', indemnity = 999999 where id = $1", [claim.id]);
+  const decidedClaim = await call(president, "select * from public.claim_decide($1, true)", [claim.id]);
+  const fund = await one(client, "select balance, total_used from public.guarantee_fund where organization_id = $1", [gov]);
+  check(
+    "indemnité accordée et prélevée sur le fonds ensemble",
+    decidedClaim.status === "approved" && decidedClaim.indemnity === 4000 && fund.balance === 6000 && fund.total_used === 4000,
+    JSON.stringify(fund),
+  );
+  await refused("seconde décision refusée, fonds non prélevé deux fois", "PY019", president, "select public.claim_decide($1, true)", [claim.id]);
+  const ownClaim = await one(
+    client,
+    "insert into public.insurance_claims (organization_id, member_id, member_name, amount, status) values ($1, $2, 'Présidente', 1000, 'submitted') returning id",
+    [gov, memberOf.president],
+  );
+  await refused("un membre du bureau ne décide pas de sa propre demande", "PY006", president, "select public.claim_decide($1, true)", [ownClaim.id]);
+
+  // Projets, réunions, mobilité
+  const project = await one(client, "insert into public.projects (organization_id, name, goal_amount) values ($1, 'Forage', 3000) returning id", [gov]);
+  await refused("contribution à un projet refusée à un étranger", "PY006", stranger, "select public.project_contribute($1, 1000)", [project.id]);
+  await refused("contribution à un projet insérée directement refusée", "42501", orgAdmin, "insert into public.project_contributions (project_id, contributor_name, amount) values ($1, 'Direct', 999999)", [project.id]);
+  let contributed = await call(bob, "select * from public.project_contribute($1, 1000)", [project.id]);
+  check("contribution à un projet : montant collecté calculé en base", contributed.raised_amount === 1000 && contributed.status === "in_progress");
+  contributed = await call(alice, "select * from public.project_contribute($1, 2000, true)", [project.id]);
+  const projectContributors = (await client.query("select contributor_name, user_id from public.project_contributions where project_id = $1 order by amount", [project.id])).rows;
+  check(
+    "objectif atteint : projet terminé, contributeur nommé en base",
+    contributed.raised_amount === 3000 && contributed.status === "completed" &&
+      projectContributors[0].contributor_name === "Bob" && projectContributors[1].contributor_name === "Donateur anonyme" && projectContributors[1].user_id === null,
+  );
+  await refused("contribution à un projet terminé refusée", "PY019", bob, "select public.project_contribute($1, 500)", [project.id]);
+
+  const meeting = await one(client, "insert into public.meetings (organization_id, title) values ($1, 'Assemblée') returning id", [gov]);
+  const attendee = await one(client, "insert into public.meeting_attendees (meeting_id, name) values ($1, 'Bob') returning id", [meeting.id]);
+  await refused("pointage refusé à un simple membre", "PY006", alice, "select public.meeting_check_in($1, 'present')", [attendee.id]);
+  await refused("statut de présence inconnu refusé", "PY009", president, "select public.meeting_check_in($1, 'téléporté')", [attendee.id]);
+  await refused("pointage direct (hors fonction) refusé", "42501", orgAdmin, "update public.meeting_attendees set status = 'present' where id = $1", [attendee.id]);
+  const checkedIn = await call(president, "select * from public.meeting_check_in($1, 'present')", [attendee.id]);
+  check("pointage par le bureau, horodaté en base", checkedIn.status === "present" && checkedIn.checked_in_at !== null);
+
+  const relocation = await one(client, "insert into public.relocations (organization_id, member_id, new_city) values ($1, $2, 'Kindia') returning id", [gov, memberOf.carol]);
+  await refused("décision de transfert refusée à un simple membre", "PY006", alice, "select public.transfer_decide($1, $2, 'accepted')", [gov, relocation.id]);
+  await refused("décision sur un déménagement inconnu refusée", "PY018", president, "select public.transfer_decide($1, 'inconnu', 'accepted')", [gov]);
+  await refused("décision de transfert insérée directement refusée", "42501", orgAdmin, "insert into public.transfer_decisions (organization_id, relocation_id, status) values ($1, $2, 'accepted')", [gov, relocation.id]);
+  const transfer = await call(president, "select * from public.transfer_decide($1, $2, 'accepted', 'Parrain : Alice', 'Dossier complet')", [gov, relocation.id]);
+  check(
+    "décision de transfert par le bureau, signée en base",
+    transfer.status === "accepted" && transfer.decided_by === "Présidente" && transfer.member_id === memberOf.carol && transfer.decided_at !== null,
+    JSON.stringify(transfer),
+  );
+  await refused("décision de transfert non modifiable une fois prise", "PY019", president, "select public.transfer_decide($1, $2, 'rejected')", [gov, relocation.id]);
+
+  // Comptabilité
+  const movement = await one(client, "insert into public.consolidation_movements (organization_id, label, amount, date) values ($1, 'Cotisations de mars', 25000, '2026-03-31') returning id", [gov]);
+  await refused("consolidation refusée hors trésorerie", "PY006", president, "select public.accounting_consolidate($1, $2::uuid[])", [gov, [movement.id]]);
+  await refused("mouvement marqué consolidé directement refusé", "42501", orgAdmin, "update public.consolidation_movements set consolidated = true where id = $1", [movement.id]);
+  let entries = (await as(client, "authenticated", treasurer, () => client.query("select * from public.accounting_consolidate($1, $2::uuid[])", [gov, [movement.id, movement.id]]))).rows;
+  check(
+    "mouvement consolidé et écriture créée ensemble",
+    entries.length === 1 && entries[0].amount === 25000 && entries[0].status === "confirmed" && entries[0].validated_by === "Trésorier" &&
+      (await one(client, "select consolidated from public.consolidation_movements where id = $1", [movement.id])).consolidated === true,
+    JSON.stringify(entries),
+  );
+  entries = (await as(client, "authenticated", treasurer, () => client.query("select * from public.accounting_consolidate($1, $2::uuid[])", [gov, [movement.id]]))).rows;
+  check("consolidation rejouable sans écriture en double", entries.length === 0);
+  }
 
   // ---- 6. Soldes négatifs ----
   const negative = await one(client, "select count(*)::int as n from public.pay_wallets where balance < 0");

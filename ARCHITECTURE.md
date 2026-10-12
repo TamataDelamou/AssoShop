@@ -62,11 +62,12 @@ Règles de conception du backend :
 ```
 assoshop-web/
 ├── supabase/
-│   ├── migrations/             # 0001 → 0026 : tables, RLS, fonctions SQL, triggers, pg_cron
+│   ├── migrations/             # 0001 → 0028 : tables, RLS, fonctions SQL, triggers, pg_cron
 │   ├── functions/              # Edge Functions (Deno)
 │   │   ├── _shared/            #   socle : secrets, HTTP, garde-fou argent réel, Control Plane (JWT, file d'envoi)
 │   │   ├── ai-assistant/       #   assistant IA, appelé par l'application
 │   │   ├── pay-topup-confirm/  #   webhook de recharge de l'opérateur
+│   │   ├── pay-withdraw/       #   retrait (jeton utilisateur ; 503 tant qu'aucun opérateur n'est intégré)
 │   │   ├── investments-settle/ #   dénouement des séquestres à la demande
 │   │   ├── control-plane/      #   health, metrics, audit-logs pour le Kernel
 │   │   └── control-plane-push/ #   envoi des métriques et journaux au Kernel
@@ -87,7 +88,7 @@ assoshop-web/
 | --- | --- | --- |
 | [docs/CONTRAT_BACKEND_FLUTTER.md](./docs/CONTRAT_BACKEND_FLUTTER.md) | Équipe Flutter | Connexion, fonctions RPC, tables et règles d'accès, Edge Functions, hors connexion, règles absolues |
 | [docs/BACKOFFICE_FLUTTER.md](./docs/BACKOFFICE_FLUTTER.md) | Équipe Flutter | Écrans du mode administrateur et fonctions utilisées par chacun |
-| [docs/INVENTAIRE_ROUTES_API.md](./docs/INVENTAIRE_ROUTES_API.md) | Équipes Flutter et backend | Sort de chaque route de l'application web, et ce qui reste à passer en base |
+| [docs/INVENTAIRE_ROUTES_API.md](./docs/INVENTAIRE_ROUTES_API.md) | Équipes Flutter et backend | Sort de chaque route de l'application web : toutes ont leur équivalent en base ou en Edge Function |
 | [docs/CONTROL_PLANE.md](./docs/CONTROL_PLANE.md) | Équipe Kernel | Contrat d'interface avec le Control Plane GSG |
 | [docs/PRODUCTION.md](./docs/PRODUCTION.md) | Exploitant | Mise en production pas à pas |
 | [ARCHITECTE_ASSOSHOP.md](./ARCHITECTE_ASSOSHOP.md) | Tous | Cahier des charges (écrans, règles de gestion RG-xxx) |

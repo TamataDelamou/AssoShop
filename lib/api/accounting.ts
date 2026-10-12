@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { throwRpcError } from "@/lib/api/pay-rpc";
 import {
   AccountingBundle,
   AccountingEntry,
@@ -367,56 +368,19 @@ export async function getConsolidation(
   return (data as unknown as MovementRow[]).map(serializeMovement);
 }
 
+// Fonction SQL atomique accounting_consolidate (0028), réservée à la
+// trésorerie : mouvement marqué consolidé et écriture créée ensemble.
 export async function consolidate(
   supabase: SupabaseClient,
   organizationId: string,
   movementIds: string[],
 ): Promise<AccountingEntry[]> {
-  const created: AccountingEntry[] = [];
-
-  for (const movementId of movementIds) {
-    const { data: movement, error } = await supabase
-      .from("consolidation_movements")
-      .select("*")
-      .eq("id", movementId)
-      .eq("organization_id", organizationId)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!movement || movement.consolidated) continue;
-
-    const { error: markError } = await supabase
-      .from("consolidation_movements")
-      .update({ consolidated: true })
-      .eq("id", movementId);
-    if (markError) throw new Error(markError.message);
-
-    const { data: entry, error: insertError } = await supabase
-      .from("accounting_entries")
-      .insert({
-        organization_id: organizationId,
-        source: movement.source,
-        account_type: movement.account_type,
-        entry_type: movement.entry_type,
-        label: movement.label,
-        amount: movement.amount,
-        payer_name: movement.payer_name,
-        beneficiary_name: movement.beneficiary_name,
-        justification: null,
-        status: "confirmed",
-        requires_double_validation: false,
-        validated_by: null,
-        second_validated_by: null,
-        created_at: movement.date,
-        validated_at: movement.date,
-      })
-      .select(ENTRY_COLUMNS)
-      .single();
-    if (insertError) throw new Error(insertError.message);
-
-    created.push(serializeEntry(entry as unknown as EntryRow));
-  }
-
-  return created;
+  const { data, error } = await supabase.rpc("accounting_consolidate", {
+    p_organization_id: organizationId,
+    p_movement_ids: movementIds,
+  });
+  if (error) throwRpcError(error);
+  return ((data ?? []) as unknown as EntryRow[]).map(serializeEntry);
 }
 
 export async function getReconciliation(

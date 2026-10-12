@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { RpcError, rpcRow, throwRpcError } from "@/lib/api/pay-rpc";
 import {
   Election,
   Mandate,
@@ -179,86 +180,46 @@ export async function listElections(
   return (data as unknown as ElectionRow[]).map(serializeElection);
 }
 
+// Fonction SQL election_declare_candidacy (0027) : un membre actif se déclare
+// lui-même ; le bureau peut déclarer un autre membre.
 export async function declareCandidacy(
   supabase: SupabaseClient,
   electionId: string,
   memberId: string,
 ): Promise<Election | null> {
-  const { data: election, error } = await supabase
-    .from("elections")
-    .select("*")
-    .eq("id", electionId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!election) return null;
-  if (election.status !== "open") throw new Error("Élection clôturée");
-
-  const { data: duplicate } = await supabase
-    .from("election_candidates")
-    .select("id")
-    .eq("election_id", electionId)
-    .eq("member_id", memberId)
-    .maybeSingle();
-  if (duplicate) throw new Error("Candidature déjà déclarée");
-
-  const { error: insertError } = await supabase
-    .from("election_candidates")
-    .insert({ election_id: electionId, member_id: memberId, votes: 0 });
-  if (insertError) throw new Error(insertError.message);
-
+  const { error } = await supabase.rpc("election_declare_candidacy", {
+    p_election_id: electionId,
+    p_member_id: memberId,
+  });
+  if (error) throwRpcError(error);
   return fetchElection(supabase, electionId);
 }
 
+// Fonction SQL election_cast_vote (0027) : un vote par membre et par scrutin,
+// compté en base, définitif.
 export async function castVote(
   supabase: SupabaseClient,
   electionId: string,
   candidateId: string,
 ): Promise<Election | null> {
-  const { data: election, error } = await supabase
-    .from("elections")
-    .select("*")
-    .eq("id", electionId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!election) return null;
-  if (election.status !== "open") throw new Error("Élection clôturée");
-
-  const { data: candidate } = await supabase
-    .from("election_candidates")
-    .select("*")
-    .eq("id", candidateId)
-    .eq("election_id", electionId)
-    .maybeSingle();
-  if (!candidate) throw new Error("Candidat introuvable");
-
-  const { error: updateError } = await supabase
-    .from("election_candidates")
-    .update({ votes: Number(candidate.votes) + 1 })
-    .eq("id", candidateId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("election_cast_vote", {
+    p_election_id: electionId,
+    p_candidate_id: candidateId,
+  });
+  if (error) throwRpcError(error);
   return fetchElection(supabase, electionId);
 }
 
+// Fonction SQL election_close (0027). RG-C06 : un scrutin clôturé n'est plus
+// modifiable.
 export async function closeElection(
   supabase: SupabaseClient,
   electionId: string,
 ): Promise<Election | null> {
-  const { data: election, error } = await supabase
-    .from("elections")
-    .select("*")
-    .eq("id", electionId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!election) return null;
-  if (election.status === "closed") throw new Error("Élection déjà clôturée");
-
-  const { error: updateError } = await supabase
-    .from("elections")
-    .update({ status: "closed", end_date: new Date().toISOString() })
-    .eq("id", electionId);
-  if (updateError) throw new Error(updateError.message);
-
+  const { error } = await supabase.rpc("election_close", {
+    p_election_id: electionId,
+  });
+  if (error) throwRpcError(error);
   return fetchElection(supabase, electionId);
 }
 
@@ -288,6 +249,9 @@ export async function listSignatures(
   return (data as unknown as SignatureRow[]).map(serializeSignature);
 }
 
+// Fonction SQL atomique signature_create (0027) : demande et signataires créés
+// ensemble, par le bureau. Chaque signataire est un membre actif disposant
+// d'un compte : c'est ce compte, et lui seul, qui pourra signer sa ligne.
 export async function createSignature(
   supabase: SupabaseClient,
   organizationId: string,
@@ -298,108 +262,68 @@ export async function createSignature(
     amount?: number;
     requested_by: string;
     signatories: { name: string; role: string }[];
+    signatory_member_ids?: string[];
   },
 ): Promise<SignatureRequest> {
-  const { data: request, error } = await supabase
-    .from("signature_requests")
-    .insert({
-      organization_id: organizationId,
-      type: payload.type,
-      title: payload.title,
-      description: payload.description,
-      amount: payload.amount ?? null,
-      requested_by: payload.requested_by,
-      status: "pending",
-    })
-    .select("id")
-    .single();
-  if (error) throw new Error(error.message);
-
-  if (payload.signatories.length > 0) {
-    const { error: insertError } = await supabase
-      .from("signature_signatories")
-      .insert(
-        payload.signatories.map((s) => ({
-          request_id: request.id,
-          name: s.name,
-          role: s.role,
-          signed_at: null,
-        })),
+  let memberIds = payload.signatory_member_ids ?? [];
+  if (memberIds.length === 0 && payload.signatories.length > 0) {
+    // L'écran web de référence saisit des noms : on retrouve les membres.
+    const names = payload.signatories.map((s) => s.name.trim()).filter(Boolean);
+    const { data: members, error: membersError } = await supabase
+      .from("members")
+      .select("id, name")
+      .eq("organization_id", organizationId)
+      .eq("status", "active")
+      .in("name", names);
+    if (membersError) throw new Error(membersError.message);
+    const found = (members ?? []) as { id: string; name: string }[];
+    const missing = names.filter((n) => !found.some((m) => m.name === n));
+    if (missing.length > 0) {
+      throw new RpcError(
+        "Signataire introuvable parmi les membres actifs : " + missing.join(", "),
+        400,
       );
-    if (insertError) throw new Error(insertError.message);
+    }
+    memberIds = found.map((m) => m.id);
   }
 
-  const created = await fetchSignature(supabase, request.id);
+  const { data, error } = await supabase.rpc("signature_create", {
+    p_organization_id: organizationId,
+    p_type: payload.type,
+    p_title: payload.title,
+    p_signatory_member_ids: memberIds,
+    p_description: payload.description ?? "",
+    p_amount: payload.amount ?? null,
+  });
+  if (error) throwRpcError(error);
+
+  const request = rpcRow<{ id: string }>(data);
+  const created = request ? await fetchSignature(supabase, request.id) : null;
   if (!created) throw new Error("Demande introuvable après création");
   return created;
 }
 
+// Fonction SQL signature_sign (0027) : l'appelant signe SA ligne ; la demande
+// se clôt d'elle-même quand toutes les lignes sont signées.
 export async function signSignature(
   supabase: SupabaseClient,
   signatureId: string,
-  signatoryId: string,
 ): Promise<SignatureRequest | null> {
-  const { data: request, error } = await supabase
-    .from("signature_requests")
-    .select("*")
-    .eq("id", signatureId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!request) return null;
-  if (request.status !== "pending")
-    throw new Error("Cette demande n'est plus en attente de signature");
-
-  const { data: signatory } = await supabase
-    .from("signature_signatories")
-    .select("*")
-    .eq("id", signatoryId)
-    .eq("request_id", signatureId)
-    .maybeSingle();
-  if (!signatory) throw new Error("Signataire introuvable");
-
-  const { error: signError } = await supabase
-    .from("signature_signatories")
-    .update({ signed_at: new Date().toISOString() })
-    .eq("id", signatoryId);
-  if (signError) throw new Error(signError.message);
-
-  const { data: all } = await supabase
-    .from("signature_signatories")
-    .select("signed_at")
-    .eq("request_id", signatureId);
-  const allSigned = (all as { signed_at: string | null }[]).every(
-    (s) => s.signed_at != null,
-  );
-  if (allSigned) {
-    const { error: statusError } = await supabase
-      .from("signature_requests")
-      .update({ status: "signed" })
-      .eq("id", signatureId);
-    if (statusError) throw new Error(statusError.message);
-  }
-
+  const { error } = await supabase.rpc("signature_sign", {
+    p_request_id: signatureId,
+  });
+  if (error) throwRpcError(error);
   return fetchSignature(supabase, signatureId);
 }
 
+// Fonction SQL signature_reject (0027) : refus par l'un des signataires désignés.
 export async function rejectSignature(
   supabase: SupabaseClient,
   signatureId: string,
 ): Promise<SignatureRequest | null> {
-  const { data: request, error } = await supabase
-    .from("signature_requests")
-    .select("*")
-    .eq("id", signatureId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!request) return null;
-
-  if (request.status === "pending") {
-    const { error: updateError } = await supabase
-      .from("signature_requests")
-      .update({ status: "rejected" })
-      .eq("id", signatureId);
-    if (updateError) throw new Error(updateError.message);
-  }
-
+  const { error } = await supabase.rpc("signature_reject", {
+    p_request_id: signatureId,
+  });
+  if (error) throwRpcError(error);
   return fetchSignature(supabase, signatureId);
 }

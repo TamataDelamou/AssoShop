@@ -9,6 +9,7 @@ import { handle as controlPlane, endpointOf } from "../../supabase/functions/con
 import { handle as controlPlanePush } from "../../supabase/functions/control-plane-push/handler.ts";
 import { handle as investmentsSettle } from "../../supabase/functions/investments-settle/handler.ts";
 import { handle as payTopupConfirm } from "../../supabase/functions/pay-topup-confirm/handler.ts";
+import { handle as payWithdraw } from "../../supabase/functions/pay-withdraw/handler.ts";
 import { isAiIntent, SYSTEM_PROMPTS } from "../../supabase/functions/_shared/ai-prompts.ts";
 import { signServiceToken, verifyServiceToken, type JwtKey } from "../../supabase/functions/_shared/control-plane/jwt.ts";
 import { secret } from "../../supabase/functions/_shared/env.ts";
@@ -69,6 +70,83 @@ describe("Garde-fou argent réel des Edge Functions", () => {
     expect(isRealMoneyBlocked((n) => ({ PAY_REAL_MONEY: "1" })[n])).toBe(false);
     expect(isRealMoneyBlocked((n) => ({ APP_ENV: "test" })[n])).toBe(false);
     expect(isRealMoneyEnabled((n) => ({ PAY_REAL_MONEY: "true" })[n])).toBe(false);
+  });
+});
+
+describe("Edge Function pay-withdraw (retrait)", () => {
+  const user = { id: "11111111-1111-4111-8111-111111111111" } as User;
+  const deps = (admin: SupabaseClient, current: User | null = user) => ({
+    getUser: async () => current,
+    createAdminClient: () => admin,
+  });
+
+  it("exige un utilisateur connecté, avant tout", async () => {
+    setEnv({ APP_ENV: "test" });
+    const { client, rpc } = fakeAdmin({ data: { id: "tx" } });
+    const response = await payWithdraw(post("pay-withdraw", { amount: 1000 }), deps(client, null));
+    expect(response.status).toBe(401);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("bloque par défaut : aucun débit hors projet de test", async () => {
+    setEnv({});
+    const { client, rpc } = fakeAdmin({ data: { id: "tx" } });
+    const response = await payWithdraw(post("pay-withdraw", { amount: 1000 }), deps(client));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("pay_test_mode");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuse aussi en argent réel : aucun opérateur n'est intégré", async () => {
+    setEnv({ PAY_REAL_MONEY: "1" });
+    const { client, rpc } = fakeAdmin({ data: { id: "tx" } });
+    const response = await payWithdraw(post("pay-withdraw", { amount: 1000 }), deps(client));
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("payout_unavailable");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("débite le compte du jeton, jamais un compte désigné par le client", async () => {
+    setEnv({ APP_ENV: "test" });
+    const { client, rpc } = fakeAdmin({ data: [{ id: "tx", status: "confirmed" }] });
+    const response = await payWithdraw(
+      post("pay-withdraw", { amount: 1000, provider: "Orange Money", user_id: "autre", p_user_id: "autre" }),
+      deps(client),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: "tx", status: "confirmed" });
+    expect(rpc).toHaveBeenCalledWith("pay_withdraw", {
+      p_user_id: user.id,
+      p_amount: 1000,
+      p_wallet_id: null,
+      p_provider: "Orange Money",
+    });
+  });
+
+  it("refuse un montant invalide et traduit les erreurs de la base", async () => {
+    setEnv({ APP_ENV: "test" });
+    for (const amount of [0, -5, 12.5, "1000", null, 3_000_000_000]) {
+      const { client, rpc } = fakeAdmin({});
+      const response = await payWithdraw(post("pay-withdraw", { amount }), deps(client));
+      expect(response.status, String(amount)).toBe(400);
+      expect(rpc).not.toHaveBeenCalled();
+    }
+    const { client } = fakeAdmin({ error: { code: "PY003" } });
+    const response = await payWithdraw(post("pay-withdraw", { amount: 1000 }), deps(client));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Solde insuffisant" });
+  });
+
+  it("n'accepte que POST et répond à la pré-requête CORS", async () => {
+    setEnv({ APP_ENV: "test" });
+    const { client } = fakeAdmin({});
+    const get = await payWithdraw(new Request("https://projet.supabase.co/functions/v1/pay-withdraw"), deps(client));
+    expect(get.status).toBe(405);
+    const options = await payWithdraw(
+      new Request("https://projet.supabase.co/functions/v1/pay-withdraw", { method: "OPTIONS" }),
+      deps(client),
+    );
+    expect(options.status).toBe(204);
   });
 });
 
@@ -305,10 +383,10 @@ describe("Socle commun des Edge Functions", () => {
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
       .map((entry) => entry.name)
       .sort();
-    expect(functions).toEqual(["ai-assistant", "control-plane", "control-plane-push", "investments-settle", "pay-topup-confirm"]);
+    expect(functions).toEqual(["ai-assistant", "control-plane", "control-plane-push", "investments-settle", "pay-topup-confirm", "pay-withdraw"]);
     for (const name of functions) {
-      // Seul l'assistant IA est appelé avec un jeton d'utilisateur.
-      const verifyJwt = name === "ai-assistant";
+      // Seuls l'assistant IA et le retrait sont appelés avec un jeton d'utilisateur.
+      const verifyJwt = name === "ai-assistant" || name === "pay-withdraw";
       expect(config).toContain(`[functions.${name}]\nverify_jwt = ${verifyJwt}`);
       expect(read(`supabase/functions/${name}/index.ts`)).toBe(
         'import { handle } from "./handler.ts";\n\nDeno.serve((request) => handle(request));\n',

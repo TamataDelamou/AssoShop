@@ -32,6 +32,8 @@ export const MIGRATION_MARKERS = {
   "0024_account_closure.sql": [{ function: "account_close" }, { function: "account_guard_user_delete" }, { table: "account_anonymizations" }],
   "0025_flutter_backend.sql": [{ function: "pin_verify" }, { function: "account_close_self" }, { function: "admin_review_kyc" }, { function: "admin_funds_summary" }, { noPolicy: ["user_profiles", "user_profiles_update_own"] }],
   "0026_scheduled_jobs.sql": [{ function: "cp_trigger_push" }, { function: "market_settle_due_investments_job" }],
+  "0027_authorized_writes.sql": [{ function: "election_cast_vote" }, { function: "signature_sign" }, { function: "market_review_service" }, { noPolicy: ["social_cases", "sc_update"] }],
+  "0028_atomic_operations.sql": [{ function: "group_validate_payment" }, { function: "loan_decide" }, { function: "hub_toggle_favorite" }, { noPolicy: ["group_payments", "gp_update"] }],
 };
 
 export function pgClient() {

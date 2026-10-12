@@ -1,50 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { apiError, getAuthedContext } from "@/lib/api/auth";
+import { getAuthedContext } from "@/lib/api/auth";
+import { payRpcErrorResponse } from "@/lib/api/pay-rpc";
 
 export async function POST(request: NextRequest) {
   const ctx = await getAuthedContext();
   if ("response" in ctx) return ctx.response;
-  const { supabase, user } = ctx;
 
   const payload = (await request.json().catch(() => null)) as {
     type?: string;
     label?: string;
     detail?: string;
   } | null;
-
-  try {
-    if (!payload?.type || !payload?.label) {
-      return NextResponse.json({ error: "Type et libellé requis" }, { status: 400 });
-    }
-
-    const { data: existing } = await supabase
-      .from("hub_favorites")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("type", payload.type)
-      .eq("label", payload.label)
-      .maybeSingle();
-
-    if (existing) {
-      await supabase.from("hub_favorites").delete().eq("id", existing.id);
-    } else {
-      const { error } = await supabase.from("hub_favorites").insert({
-        user_id: user.id,
-        type: payload.type,
-        label: payload.label,
-        detail: payload.detail ?? "",
-      });
-      if (error) throw error;
-    }
-
-    const { data: list } = await supabase
-      .from("hub_favorites")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
-
-    return NextResponse.json(list ?? []);
-  } catch (err) {
-    return apiError(err);
+  if (!payload?.type || !payload?.label) {
+    return NextResponse.json({ error: "Type et libellé requis" }, { status: 400 });
   }
+
+  // Bascule atomique en base (fonction SQL hub_toggle_favorite, migration
+  // 0028) ; renvoie la liste à jour.
+  const { data, error } = await ctx.supabase.rpc("hub_toggle_favorite", {
+    p_type: payload.type,
+    p_label: payload.label,
+    p_detail: payload.detail ?? "",
+  });
+  if (error) return payRpcErrorResponse(error);
+
+  return NextResponse.json(data ?? []);
 }

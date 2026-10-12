@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { rpcRow, throwRpcError } from "@/lib/api/pay-rpc";
 import { EngagementLevel } from "@/types/modules/finance";
 import {
   MemberProfile,
@@ -200,6 +201,8 @@ export async function generateMobilityReport(
   return report;
 }
 
+// Fonction SQL transfer_decide (0028). RG-C14 : décision du bureau de
+// l'association d'accueil ; une fois prise, elle n'est plus modifiable.
 export async function decideTransfer(
   supabase: SupabaseClient,
   organizationId: string,
@@ -211,57 +214,15 @@ export async function decideTransfer(
     decided_by?: string;
   },
 ): Promise<TransferDecision> {
-  const { data: existingRaw } = await supabase
-    .from("transfer_decisions")
-    .select(DECISION_COLUMNS)
-    .eq("relocation_id", relocationId)
-    .maybeSingle();
-  const existing = existingRaw as unknown as DecisionRow | null;
-
-  const decidedAt = new Date().toISOString();
-  if (existing) {
-    const { error: updateError } = await supabase
-      .from("transfer_decisions")
-      .update({
-        status: payload.status,
-        sponsorship: payload.sponsorship ?? null,
-        decision_note: payload.decision_note ?? null,
-        decided_by: payload.decided_by ?? null,
-        decided_at: decidedAt,
-      })
-      .eq("id", existing.id);
-    if (updateError) throw new Error(updateError.message);
-
-    const { data: updated } = await supabase
-      .from("transfer_decisions")
-      .select(DECISION_COLUMNS)
-      .eq("id", existing.id)
-      .maybeSingle();
-    return serializeDecision(updated as unknown as DecisionRow);
-  }
-
-  const { data: report } = await supabase
-    .from("mobility_reports")
-    .select("member_id")
-    .eq("relocation_id", relocationId)
-    .maybeSingle();
-
-  const { data: created, error } = await supabase
-    .from("transfer_decisions")
-    .insert({
-      organization_id: organizationId,
-      relocation_id: relocationId,
-      member_id: (report as { member_id: string } | null)?.member_id ?? "",
-      status: payload.status,
-      sponsorship: payload.sponsorship ?? null,
-      decision_note: payload.decision_note ?? null,
-      decided_by: payload.decided_by ?? null,
-      decided_at: decidedAt,
-    })
-    .select(DECISION_COLUMNS)
-    .single();
-  if (error) throw new Error(error.message);
-  return serializeDecision(created as unknown as DecisionRow);
+  const { data, error } = await supabase.rpc("transfer_decide", {
+    p_organization_id: organizationId,
+    p_relocation_id: relocationId,
+    p_status: payload.status,
+    p_sponsorship: payload.sponsorship ?? null,
+    p_note: payload.decision_note ?? null,
+  });
+  if (error) throwRpcError(error);
+  return serializeDecision(rpcRow<DecisionRow>(data) as DecisionRow);
 }
 
 // ============================================
